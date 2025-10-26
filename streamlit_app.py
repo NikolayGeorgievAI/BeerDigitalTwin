@@ -19,7 +19,6 @@ st.set_page_config(
 st.title("🍺 Beer Recipe Digital Twin")
 st.caption("Predict hop aroma, malt character, and fermentation profile using trained ML models.")
 
-
 # ---------------------------------------------------------------------------------
 # CACHED LOADING OF MODELS + DATA
 # ---------------------------------------------------------------------------------
@@ -60,7 +59,6 @@ def load_models_and_data():
         yeast_model, yeast_features, yeast_dims,
         malt_df, yeast_df
     )
-
 
 # ---------------------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -199,33 +197,53 @@ def summarize_beer(
         "style_guess": style_guess
     }
 
-
 # ---------------------------------------------------------------------------------
 # PLOTTING
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
-    Basic radar (spider) chart of hop aroma dimensions.
+    Improved radar (spider) chart of hop aroma dimensions:
+    - bigger figure
+    - tighter layout so labels aren't clipped
+    - auto-scale radial limits so negative values or tiny values are still readable
     """
     labels = list(hop_profile.keys())
-    values = list(hop_profile.values())
+    vals   = np.array(list(hop_profile.values()), dtype=float)
 
-    # Close the loop on the plot
-    labels += [labels[0]]
-    values += [values[0]]
+    # angles for each axis
+    num_axes = len(labels)
+    angles = np.linspace(0, 2*np.pi, num_axes, endpoint=False).tolist()
 
-    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False)
+    # close the polygon
+    vals_closed   = np.concatenate([vals, [vals[0]]])
+    angles_closed = angles + [angles[0]]
 
-    fig = plt.figure(figsize=(4,4))
-    ax = fig.add_subplot(111, polar=True)
-    ax.plot(angles, values, linewidth=2)
-    ax.fill(angles, values, alpha=0.25)
+    # figure
+    fig, ax = plt.subplots(figsize=(6,6), subplot_kw=dict(polar=True))
+    fig.subplots_adjust(left=0.15, right=0.85, top=0.85, bottom=0.15)
+
+    ax.plot(angles_closed, vals_closed, linewidth=2, color="tab:blue")
+    ax.fill(angles_closed, vals_closed, alpha=0.25, color="tab:blue")
+
+    # axis ticks / labels
     ax.set_xticks(angles)
-    ax.set_xticklabels(labels)
-    ax.set_title(title)
-    ax.set_rlabel_position(0)
-    return fig
+    ax.set_xticklabels(labels, fontsize=10)
 
+    # radial scaling
+    vmin = min(0, vals.min() * 1.1)
+    vmax = vals.max() * 1.2 if vals.max() > 0 else 0.1
+    ax.set_ylim(vmin, vmax)
+
+    # radial tick style
+    ax.tick_params(axis="y", labelsize=9)
+    ax.set_rlabel_position(0)
+
+    # grid + title
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.set_title(title, size=14, weight="bold", pad=20)
+
+    plt.tight_layout()
+    return fig
 
 # ---------------------------------------------------------------------------------
 # APP UI
@@ -264,30 +282,40 @@ hop_bill = {
     hop4_name: hop4_amt,
 }
 
-
 # --- Sidebar: Malt Bill (3-part blend) ----------------------------------------
 st.sidebar.header("Malt Bill")
 
 malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
 
 malt1_name = st.sidebar.selectbox("Malt 1", malt_options, key="malt1_name")
-malt1_pct  = st.sidebar.number_input("Malt 1 %", min_value=0.0, max_value=100.0,
-                                     value=70.0, step=1.0, key="malt1_pct")
+malt1_pct  = st.sidebar.number_input(
+    "Malt 1 %",
+    min_value=0.0, max_value=100.0,
+    value=70.0, step=1.0,
+    key="malt1_pct"
+)
 
 malt2_name = st.sidebar.selectbox("Malt 2", malt_options, key="malt2_name")
-malt2_pct  = st.sidebar.number_input("Malt 2 %", min_value=0.0, max_value=100.0,
-                                     value=20.0, step=1.0, key="malt2_pct")
+malt2_pct  = st.sidebar.number_input(
+    "Malt 2 %",
+    min_value=0.0, max_value=100.0,
+    value=20.0, step=1.0,
+    key="malt2_pct"
+)
 
 malt3_name = st.sidebar.selectbox("Malt 3", malt_options, key="malt3_name")
-malt3_pct  = st.sidebar.number_input("Malt 3 %", min_value=0.0, max_value=100.0,
-                                     value=10.0, step=1.0, key="malt3_pct")
+malt3_pct  = st.sidebar.number_input(
+    "Malt 3 %",
+    min_value=0.0, max_value=100.0,
+    value=10.0, step=1.0,
+    key="malt3_pct"
+)
 
 malt_selections = [
     {"name": malt1_name, "pct": malt1_pct},
     {"name": malt2_name, "pct": malt2_pct},
     {"name": malt3_name, "pct": malt3_pct},
 ]
-
 
 # --- Sidebar: Yeast -----------------------------------------------------------
 st.sidebar.header("Yeast")
@@ -296,7 +324,6 @@ chosen_yeast  = st.sidebar.selectbox("Yeast Strain", yeast_options)
 
 # Predict button
 run_button = st.sidebar.button("Predict Flavor 🧪")
-
 
 # --- Main panel ---------------------------------------------------------------
 if run_button:
