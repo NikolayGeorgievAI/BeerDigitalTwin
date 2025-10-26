@@ -119,9 +119,6 @@ def predict_hop_profile(hop_bill_dict, hop_model, hop_features, hop_dims):
 
     # If nothing matched or all proportions are 0, warn and bail gracefully
     if np.sum(x) == 0 or len(matched) == 0:
-        # This triggers when:
-        # - user chose hops not in training set
-        # - or they entered 0g for all hops (total==0)
         profile = {dim: 0.0 for dim in hop_dims}
         return profile, matched, x
 
@@ -333,79 +330,159 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
 # -----------------------------------------------------------------------------
 # SIDEBAR UI
 # -----------------------------------------------------------------------------
-# We keep hop choices in session_state so Streamlit Cloud reloads don't crash.
-if "hop1_name" not in st.session_state:
-    st.session_state.hop1_name = ALL_MODEL_HOPS[0] if len(ALL_MODEL_HOPS) > 0 else ""
-if "hop2_name" not in st.session_state:
-    st.session_state.hop2_name = ALL_MODEL_HOPS[1] if len(ALL_MODEL_HOPS) > 1 else st.session_state.hop1_name
-if "hop3_name" not in st.session_state:
-    st.session_state.hop3_name = ALL_MODEL_HOPS[2] if len(ALL_MODEL_HOPS) > 2 else st.session_state.hop1_name
-if "hop4_name" not in st.session_state:
-    st.session_state.hop4_name = ALL_MODEL_HOPS[3] if len(ALL_MODEL_HOPS) > 3 else st.session_state.hop1_name
 
+# 1. Initialize session_state defaults ONCE (safe, no widgets yet).
+if "hop1_name" not in st.session_state:
+    st.session_state["hop1_name"] = ALL_MODEL_HOPS[0] if len(ALL_MODEL_HOPS) > 0 else ""
+if "hop2_name" not in st.session_state:
+    st.session_state["hop2_name"] = ALL_MODEL_HOPS[1] if len(ALL_MODEL_HOPS) > 1 else st.session_state["hop1_name"]
+if "hop3_name" not in st.session_state:
+    st.session_state["hop3_name"] = ALL_MODEL_HOPS[2] if len(ALL_MODEL_HOPS) > 2 else st.session_state["hop1_name"]
+if "hop4_name" not in st.session_state:
+    st.session_state["hop4_name"] = ALL_MODEL_HOPS[3] if len(ALL_MODEL_HOPS) > 3 else st.session_state["hop1_name"]
+
+if "hop1_amt" not in st.session_state:
+    st.session_state["hop1_amt"] = 40.0
+if "hop2_amt" not in st.session_state:
+    st.session_state["hop2_amt"] = 40.0
+if "hop3_amt" not in st.session_state:
+    st.session_state["hop3_amt"] = 0.0
+if "hop4_amt" not in st.session_state:
+    st.session_state["hop4_amt"] = 0.0
+
+if "malt1_pct" not in st.session_state:
+    st.session_state["malt1_pct"] = 70.0
+if "malt2_pct" not in st.session_state:
+    st.session_state["malt2_pct"] = 20.0
+if "malt3_pct" not in st.session_state:
+    st.session_state["malt3_pct"] = 10.0
+
+# 2. Render widgets, referencing those keys. We DO NOT assign widget output back manually.
 st.sidebar.header("🌿 Hop Bill")
 
-# Hop 1
-st.session_state.hop1_name = st.sidebar.selectbox(
-    "Hop 1", ALL_MODEL_HOPS, index=ALL_MODEL_HOPS.index(st.session_state.hop1_name) if st.session_state.hop1_name in ALL_MODEL_HOPS else 0,
-    key="hop1_name"
+st.sidebar.selectbox(
+    "Hop 1",
+    ALL_MODEL_HOPS,
+    index=ALL_MODEL_HOPS.index(st.session_state["hop1_name"]) if st.session_state["hop1_name"] in ALL_MODEL_HOPS else 0,
+    key="hop1_name",
 )
-hop1_amt  = st.sidebar.number_input(f"{st.session_state.hop1_name} (g)", min_value=0.0, max_value=200.0, value=40.0, step=5.0, key="hop1_amt")
-
-# Hop 2
-st.session_state.hop2_name = st.sidebar.selectbox(
-    "Hop 2", ALL_MODEL_HOPS, index=ALL_MODEL_HOPS.index(st.session_state.hop2_name) if st.session_state.hop2_name in ALL_MODEL_HOPS else 0,
-    key="hop2_name"
+st.sidebar.number_input(
+    f"{st.session_state['hop1_name']} (g)",
+    min_value=0.0, max_value=200.0, step=5.0,
+    key="hop1_amt",
 )
-hop2_amt  = st.sidebar.number_input(f"{st.session_state.hop2_name} (g)", min_value=0.0, max_value=200.0, value=40.0, step=5.0, key="hop2_amt")
 
-# Hop 3
-st.session_state.hop3_name = st.sidebar.selectbox(
-    "Hop 3", ALL_MODEL_HOPS, index=ALL_MODEL_HOPS.index(st.session_state.hop3_name) if st.session_state.hop3_name in ALL_MODEL_HOPS else 0,
-    key="hop3_name"
+st.sidebar.selectbox(
+    "Hop 2",
+    ALL_MODEL_HOPS,
+    index=ALL_MODEL_HOPS.index(st.session_state["hop2_name"]) if st.session_state["hop2_name"] in ALL_MODEL_HOPS else 0,
+    key="hop2_name",
 )
-hop3_amt  = st.sidebar.number_input(f"{st.session_state.hop3_name} (g)", min_value=0.0, max_value=200.0, value=0.0, step=5.0, key="hop3_amt")
-
-# Hop 4
-st.session_state.hop4_name = st.sidebar.selectbox(
-    "Hop 4", ALL_MODEL_HOPS, index=ALL_MODEL_HOPS.index(st.session_state.hop4_name) if st.session_state.hop4_name in ALL_MODEL_HOPS else 0,
-    key="hop4_name"
+st.sidebar.number_input(
+    f"{st.session_state['hop2_name']} (g)",
+    min_value=0.0, max_value=200.0, step=5.0,
+    key="hop2_amt",
 )
-hop4_amt  = st.sidebar.number_input(f"{st.session_state.hop4_name} (g)", min_value=0.0, max_value=200.0, value=0.0, step=5.0, key="hop4_amt")
 
+st.sidebar.selectbox(
+    "Hop 3",
+    ALL_MODEL_HOPS,
+    index=ALL_MODEL_HOPS.index(st.session_state["hop3_name"]) if st.session_state["hop3_name"] in ALL_MODEL_HOPS else 0,
+    key="hop3_name",
+)
+st.sidebar.number_input(
+    f"{st.session_state['hop3_name']} (g)",
+    min_value=0.0, max_value=200.0, step=5.0,
+    key="hop3_amt",
+)
+
+st.sidebar.selectbox(
+    "Hop 4",
+    ALL_MODEL_HOPS,
+    index=ALL_MODEL_HOPS.index(st.session_state["hop4_name"]) if st.session_state["hop4_name"] in ALL_MODEL_HOPS else 0,
+    key="hop4_name",
+)
+st.sidebar.number_input(
+    f"{st.session_state['hop4_name']} (g)",
+    min_value=0.0, max_value=200.0, step=5.0,
+    key="hop4_amt",
+)
+
+# Build hop_bill AFTER widgets:
 hop_bill = {
-    st.session_state.hop1_name: hop1_amt,
-    st.session_state.hop2_name: hop2_amt,
-    st.session_state.hop3_name: hop3_amt,
-    st.session_state.hop4_name: hop4_amt,
+    st.session_state["hop1_name"]: st.session_state["hop1_amt"],
+    st.session_state["hop2_name"]: st.session_state["hop2_amt"],
+    st.session_state["hop3_name"]: st.session_state["hop3_amt"],
+    st.session_state["hop4_name"]: st.session_state["hop4_amt"],
 }
 
 # Malt Bill
 st.sidebar.header("🌾 Malt Bill")
 malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
 
-malt1_name = st.sidebar.selectbox("Malt 1", malt_options, key="malt1_name")
-malt1_pct  = st.sidebar.number_input("Malt 1 %", min_value=0.0, max_value=100.0,
-                                     value=70.0, step=1.0, key="malt1_pct")
+# default the malt names if not set
+if "malt1_name" not in st.session_state:
+    st.session_state["malt1_name"] = malt_options[0] if malt_options else ""
+if "malt2_name" not in st.session_state:
+    st.session_state["malt2_name"] = malt_options[1] if len(malt_options) > 1 else (malt_options[0] if malt_options else "")
+if "malt3_name" not in st.session_state:
+    st.session_state["malt3_name"] = malt_options[2] if len(malt_options) > 2 else (malt_options[0] if malt_options else "")
 
-malt2_name = st.sidebar.selectbox("Malt 2", malt_options, key="malt2_name")
-malt2_pct  = st.sidebar.number_input("Malt 2 %", min_value=0.0, max_value=100.0,
-                                     value=20.0, step=1.0, key="malt2_pct")
+st.sidebar.selectbox(
+    "Malt 1",
+    malt_options,
+    index=malt_options.index(st.session_state["malt1_name"]) if st.session_state["malt1_name"] in malt_options else 0,
+    key="malt1_name",
+)
+st.sidebar.number_input(
+    "Malt 1 %",
+    min_value=0.0, max_value=100.0, step=1.0,
+    key="malt1_pct",
+)
 
-malt3_name = st.sidebar.selectbox("Malt 3", malt_options, key="malt3_name")
-malt3_pct  = st.sidebar.number_input("Malt 3 %", min_value=0.0, max_value=100.0,
-                                     value=10.0, step=1.0, key="malt3_pct")
+st.sidebar.selectbox(
+    "Malt 2",
+    malt_options,
+    index=malt_options.index(st.session_state["malt2_name"]) if st.session_state["malt2_name"] in malt_options else 0,
+    key="malt2_name",
+)
+st.sidebar.number_input(
+    "Malt 2 %",
+    min_value=0.0, max_value=100.0, step=1.0,
+    key="malt2_pct",
+)
+
+st.sidebar.selectbox(
+    "Malt 3",
+    malt_options,
+    index=malt_options.index(st.session_state["malt3_name"]) if st.session_state["malt3_name"] in malt_options else 0,
+    key="malt3_name",
+)
+st.sidebar.number_input(
+    "Malt 3 %",
+    min_value=0.0, max_value=100.0, step=1.0,
+    key="malt3_pct",
+)
 
 malt_selections = [
-    {"name": malt1_name, "pct": malt1_pct},
-    {"name": malt2_name, "pct": malt2_pct},
-    {"name": malt3_name, "pct": malt3_pct},
+    {"name": st.session_state["malt1_name"], "pct": st.session_state["malt1_pct"]},
+    {"name": st.session_state["malt2_name"], "pct": st.session_state["malt2_pct"]},
+    {"name": st.session_state["malt3_name"], "pct": st.session_state["malt3_pct"]},
 ]
 
 # Yeast
 st.sidebar.header("🧬 Yeast")
 yeast_options = sorted(yeast_df["Name"].dropna().unique().tolist())
-chosen_yeast  = st.sidebar.selectbox("Yeast Strain", yeast_options)
+
+if "chosen_yeast" not in st.session_state:
+    st.session_state["chosen_yeast"] = yeast_options[0] if yeast_options else ""
+
+st.sidebar.selectbox(
+    "Yeast Strain",
+    yeast_options,
+    index=yeast_options.index(st.session_state["chosen_yeast"]) if st.session_state["chosen_yeast"] in yeast_options else 0,
+    key="chosen_yeast",
+)
 
 run_button = st.sidebar.button("Predict Flavor 🧪", type="primary")
 
@@ -423,7 +500,7 @@ if run_button:
     summary = summarize_beer(
         hop_bill,
         malt_selections,
-        chosen_yeast,
+        st.session_state["chosen_yeast"],
         hop_model, hop_features, hop_dims,
         malt_model, malt_df, malt_features, malt_dims,
         yeast_model, yeast_df, yeast_features, yeast_dims
@@ -437,7 +514,7 @@ if run_button:
     hop_matched   = summary["hop_matched"]      # hops actually mapped into model
     hop_x         = summary["hop_x"]            # numeric model input row (1 x n_features)
 
-    # LEFT big radar, RIGHT text summary
+    # layout: big radar on left, summary text on right
     col_left, col_right = st.columns([2, 1], vertical_alignment="top")
 
     with col_left:
