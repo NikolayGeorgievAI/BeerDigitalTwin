@@ -7,7 +7,6 @@ import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
 
-
 # -----------------------------------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------------------------------
@@ -23,8 +22,7 @@ st.set_page_config(
 @st.cache_resource
 def load_models_and_data():
     """
-    Load all trained models + reference data once, cache them for the session.
-    We assume the .joblib/.pkl files are in the same working directory as this app.
+    Load trained models + reference data once.
     """
     hop_bundle   = joblib.load("hop_aroma_model.joblib")
     malt_bundle  = joblib.load("malt_sensory_model.joblib")
@@ -45,7 +43,7 @@ def load_models_and_data():
     malt_df  = pd.read_pickle("clean_malt_df.pkl")
     yeast_df = pd.read_pickle("clean_yeast_df.pkl")
 
-    # Derive list of hops from hop_features: "hop_Citra" -> "Citra"
+    # hops list from feature columns (hop_Citra -> Citra)
     all_hops_model_knows = [c.replace("hop_", "") for c in hop_features]
 
     return (
@@ -56,7 +54,6 @@ def load_models_and_data():
         all_hops_model_knows
     )
 
-
 (
     hop_model, hop_features, hop_dims,
     malt_model, malt_features, malt_dims,
@@ -65,17 +62,14 @@ def load_models_and_data():
     all_hops_model_knows
 ) = load_models_and_data()
 
-
 # -----------------------------------------------------------------------------
-# HELPER FUNCTIONS
+# UTIL
 # -----------------------------------------------------------------------------
-
 def _safe_get_session(key, default):
-    """Utility to avoid KeyErrors on first run for session_state."""
+    """Avoid KeyError on first run. Also don't overwrite if already set."""
     if key not in st.session_state:
         st.session_state[key] = default
     return st.session_state[key]
-
 
 # ---- HOPS ----
 def build_hop_features(hop_bill_dict, hop_features):
@@ -92,20 +86,19 @@ def build_hop_features(hop_bill_dict, hop_features):
 
 def predict_hop_profile(hop_bill_dict, hop_model, hop_features, hop_dims):
     x = build_hop_features(hop_bill_dict, hop_features)
-    y_pred = hop_model.predict(x)[0]  # numeric intensities (floats)
+    y_pred = hop_model.predict(x)[0]  # numeric intensities
     return dict(zip(hop_dims, y_pred))
-
 
 # ---- MALTS ----
 def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
     """
-    malt_selections looks like:
+    malt_selections:
     [
       {"name": "Maris Otter", "pct": 70},
       {"name": "Crystal 60L", "pct": 20},
       {"name": "Flaked Oats", "pct": 10}
     ]
-    We build a weighted blend of the malt_features based on pct of grist.
+    We'll produce a weighted sum of malt_features.
     """
     blend_vec = np.zeros(len(malt_features), dtype=float)
 
@@ -124,19 +117,16 @@ def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
 
 def predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims):
     x = get_weighted_malt_vector(malt_selections, malt_df, malt_features)
-    y_pred = malt_model.predict(x)[0]  # usually 0/1-ish traits
+    y_pred = malt_model.predict(x)[0]  # often 0/1-like trait flags
     return dict(zip(malt_dims, y_pred))
-
 
 # ---- YEAST ----
 def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
     """
-    Build single-row model input for chosen yeast strain.
-    yeast_features assumed order matches training, e.g. ["Temp_avg_C","Flocculation_num","Attenuation_pct"]
+    Build single-row vector for chosen yeast.
     """
     row = yeast_df[yeast_df["Name"] == yeast_name].head(1)
     if row.empty:
-        # fallback zeros if strain not found
         return np.zeros(len(yeast_features)).reshape(1, -1)
 
     vec = [
@@ -148,9 +138,8 @@ def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
 
 def predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims):
     x = get_yeast_feature_vector(yeast_name, yeast_df, yeast_features)
-    y_pred = yeast_model.predict(x)[0]  # again, mostly categorical-ish traits
+    y_pred = yeast_model.predict(x)[0]
     return dict(zip(yeast_dims, y_pred))
-
 
 # ---- STYLE SUMMARY ----
 def summarize_beer(
@@ -165,17 +154,16 @@ def summarize_beer(
     malt_out  = predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims)
     yeast_out = predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims)
 
-    # Top hop notes (sorted desc)
+    # Top hop notes
     hop_sorted = sorted(hop_out.items(), key=lambda kv: kv[1], reverse=True)
     top_hops   = [f"{k} ({round(v, 2)})" for k, v in hop_sorted[:2]]
 
-    # Malt traits set to 1 (or >0.5 etc.)
+    # Malt traits likely "on"
     malt_active = [k for k, v in malt_out.items() if v == 1 or v > 0.5]
-
-    # Yeast traits set to 1 (or >0.5 etc.)
+    # Yeast traits likely "on"
     yeast_active = [k for k, v in yeast_out.items() if v == 1 or v > 0.5]
 
-    # Heuristic style guess
+    # Heuristic style guess (same logic we had)
     style_guess = "Experimental / Hybrid"
 
     if ("clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
@@ -203,27 +191,23 @@ def summarize_beer(
         "style_guess": style_guess
     }
 
-
 # -----------------------------------------------------------------------------
 # RADAR PLOT
 # -----------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
-    Draw a radar chart for hop_profile (dict of aroma_dim -> float).
-    We'll autoscale radius to data max so it doesn't look stuck at 0..1
-    when the model outputs tiny values.
+    Radar chart for hop_profile (dict aroma_dim->float).
+    Autoscale radius so we don't get a flat donut at 0.00.
     """
     if not hop_profile:
-        return None  # nothing to plot
+        return None
 
     labels = list(hop_profile.keys())
     values = np.array(list(hop_profile.values()), dtype=float)
 
-    # if everything is basically 0, avoid divide-by-0 and just plot tiny ring
     vmax = values.max() if values.max() > 0 else 1.0
     rmax = vmax * 1.2
 
-    # close shape
     closed_vals = np.concatenate([values, values[:1]])
     n = len(labels)
     base_angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
@@ -237,7 +221,6 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     ax.plot(closed_angles, closed_vals, linewidth=2, color="#1f77b4")
     ax.fill(closed_angles, closed_vals, alpha=0.25, color="#1f77b4")
 
-    # annotate each vertex
     for ang, val in zip(base_angles, values):
         ax.text(
             ang,
@@ -255,11 +238,9 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
             )
         )
 
-    # category ticks
     ax.set_xticks(base_angles)
     ax.set_xticklabels(labels, fontsize=12)
 
-    # radial settings
     ax.set_ylim(0, rmax)
     ax.set_yticks(np.linspace(0, rmax, 5))
     ax.set_yticklabels(
@@ -280,18 +261,35 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     fig.tight_layout()
     return fig
 
+# -----------------------------------------------------------------------------
+# INIT PERSISTENT RESULT HOLDERS
+# -----------------------------------------------------------------------------
+_safe_get_session("latest_summary", None)
+_safe_get_session("latest_hop_profile", None)
 
 # -----------------------------------------------------------------------------
-# SIDEBAR UI (REAL sidebar again)
+# SIDEBAR UI
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("🌿 Hop Bill")
 
-    # ensure session keys exist so first render doesn't explode
-    _safe_get_session("hop1_name", all_hops_model_knows[0] if all_hops_model_knows else "")
-    _safe_get_session("hop2_name", all_hops_model_knows[1] if len(all_hops_model_knows) > 1 else _safe_get_session("hop1_name",""))
-    _safe_get_session("hop3_name", all_hops_model_knows[2] if len(all_hops_model_knows) > 2 else _safe_get_session("hop1_name",""))
-    _safe_get_session("hop4_name", all_hops_model_knows[3] if len(all_hops_model_knows) > 3 else _safe_get_session("hop1_name",""))
+    # Prepare defaults safely before widgets render
+    if all_hops_model_knows:
+        _safe_get_session("hop1_name", all_hops_model_knows[0])
+    else:
+        _safe_get_session("hop1_name", "")
+    if len(all_hops_model_knows) > 1:
+        _safe_get_session("hop2_name", all_hops_model_knows[1])
+    else:
+        _safe_get_session("hop2_name", st.session_state["hop1_name"])
+    if len(all_hops_model_knows) > 2:
+        _safe_get_session("hop3_name", all_hops_model_knows[2])
+    else:
+        _safe_get_session("hop3_name", st.session_state["hop1_name"])
+    if len(all_hops_model_knows) > 3:
+        _safe_get_session("hop4_name", all_hops_model_knows[3])
+    else:
+        _safe_get_session("hop4_name", st.session_state["hop1_name"])
 
     _safe_get_session("hop1_amt", 40.0)
     _safe_get_session("hop2_amt", 40.0)
@@ -300,19 +298,58 @@ with st.sidebar:
 
     all_hops_sorted = sorted(all_hops_model_knows)
 
-    st.session_state.hop1_name = st.selectbox("Hop 1", all_hops_sorted, key="hop1_name")
-    st.session_state.hop1_amt  = st.number_input(f"{st.session_state.hop1_name} (g)", min_value=0.0, max_value=200.0, step=1.0, key="hop1_amt")
+    st.selectbox(
+        "Hop 1",
+        all_hops_sorted,
+        key="hop1_name"
+    )
+    st.number_input(
+        f"{st.session_state.hop1_name} (g)",
+        min_value=0.0,
+        max_value=200.0,
+        step=1.0,
+        key="hop1_amt"
+    )
 
-    st.session_state.hop2_name = st.selectbox("Hop 2", all_hops_sorted, key="hop2_name")
-    st.session_state.hop2_amt  = st.number_input(f"{st.session_state.hop2_name} (g)", min_value=0.0, max_value=200.0, step=1.0, key="hop2_amt")
+    st.selectbox(
+        "Hop 2",
+        all_hops_sorted,
+        key="hop2_name"
+    )
+    st.number_input(
+        f"{st.session_state.hop2_name} (g)",
+        min_value=0.0,
+        max_value=200.0,
+        step=1.0,
+        key="hop2_amt"
+    )
 
-    st.session_state.hop3_name = st.selectbox("Hop 3", all_hops_sorted, key="hop3_name")
-    st.session_state.hop3_amt  = st.number_input(f"{st.session_state.hop3_name} (g)", min_value=0.0, max_value=200.0, step=1.0, key="hop3_amt")
+    st.selectbox(
+        "Hop 3",
+        all_hops_sorted,
+        key="hop3_name"
+    )
+    st.number_input(
+        f"{st.session_state.hop3_name} (g)",
+        min_value=0.0,
+        max_value=200.0,
+        step=1.0,
+        key="hop3_amt"
+    )
 
-    st.session_state.hop4_name = st.selectbox("Hop 4", all_hops_sorted, key="hop4_name")
-    st.session_state.hop4_amt  = st.number_input(f"{st.session_state.hop4_name} (g)", min_value=0.0, max_value=200.0, step=1.0, key="hop4_amt")
+    st.selectbox(
+        "Hop 4",
+        all_hops_sorted,
+        key="hop4_name"
+    )
+    st.number_input(
+        f"{st.session_state.hop4_name} (g)",
+        min_value=0.0,
+        max_value=200.0,
+        step=1.0,
+        key="hop4_amt"
+    )
 
-    # Build hop bill dict
     hop_bill = {
         st.session_state.hop1_name: st.session_state.hop1_amt,
         st.session_state.hop2_name: st.session_state.hop2_amt,
@@ -321,25 +358,63 @@ with st.sidebar:
     }
 
     st.header("🌾 Malt Bill")
-
     malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
 
-    _safe_get_session("malt1_name", malt_options[0] if len(malt_options) else "")
-    _safe_get_session("malt2_name", malt_options[1] if len(malt_options) > 1 else _safe_get_session("malt1_name",""))
-    _safe_get_session("malt3_name", malt_options[2] if len(malt_options) > 2 else _safe_get_session("malt1_name",""))
+    if malt_options:
+        _safe_get_session("malt1_name", malt_options[0])
+    else:
+        _safe_get_session("malt1_name", "")
+    if len(malt_options) > 1:
+        _safe_get_session("malt2_name", malt_options[1])
+    else:
+        _safe_get_session("malt2_name", st.session_state["malt1_name"])
+    if len(malt_options) > 2:
+        _safe_get_session("malt3_name", malt_options[2])
+    else:
+        _safe_get_session("malt3_name", st.session_state["malt1_name"])
 
     _safe_get_session("malt1_pct", 70.0)
     _safe_get_session("malt2_pct", 20.0)
     _safe_get_session("malt3_pct", 10.0)
 
-    st.session_state.malt1_name = st.selectbox("Malt 1", malt_options, key="malt1_name")
-    st.session_state.malt1_pct  = st.number_input("Malt 1 %", min_value=0.0, max_value=100.0, step=1.0, key="malt1_pct")
+    st.selectbox(
+        "Malt 1",
+        malt_options,
+        key="malt1_name"
+    )
+    st.number_input(
+        "Malt 1 %",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        key="malt1_pct"
+    )
 
-    st.session_state.malt2_name = st.selectbox("Malt 2", malt_options, key="malt2_name")
-    st.session_state.malt2_pct  = st.number_input("Malt 2 %", min_value=0.0, max_value=100.0, step=1.0, key="malt2_pct")
+    st.selectbox(
+        "Malt 2",
+        malt_options,
+        key="malt2_name"
+    )
+    st.number_input(
+        "Malt 2 %",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        key="malt2_pct"
+    )
 
-    st.session_state.malt3_name = st.selectbox("Malt 3", malt_options, key="malt3_name")
-    st.session_state.malt3_pct  = st.number_input("Malt 3 %", min_value=0.0, max_value=100.0, step=1.0, key="malt3_pct")
+    st.selectbox(
+        "Malt 3",
+        malt_options,
+        key="malt3_name"
+    )
+    st.number_input(
+        "Malt 3 %",
+        min_value=0.0,
+        max_value=100.0,
+        step=1.0,
+        key="malt3_pct"
+    )
 
     malt_selections = [
         {"name": st.session_state.malt1_name, "pct": st.session_state.malt1_pct},
@@ -349,23 +424,26 @@ with st.sidebar:
 
     st.header("🧬 Yeast")
     yeast_options = sorted(yeast_df["Name"].dropna().unique().tolist())
-    _safe_get_session("chosen_yeast", yeast_options[0] if yeast_options else "")
-    st.session_state.chosen_yeast = st.selectbox("Yeast Strain", yeast_options, key="chosen_yeast")
+    if yeast_options:
+        _safe_get_session("chosen_yeast", yeast_options[0])
+    else:
+        _safe_get_session("chosen_yeast", "")
 
-    # Prediction trigger
+    st.selectbox(
+        "Yeast Strain",
+        yeast_options,
+        key="chosen_yeast"
+    )
+
     run_button = st.button("Predict Flavor 🧪")
 
-    # little expander listing which hops we even trained on
     with st.expander("🍥 Model trained on hops:"):
         st.write(", ".join(all_hops_model_knows))
 
 
 # -----------------------------------------------------------------------------
-# RUN PREDICTION (store results in session_state so radar persists)
+# RUN PREDICTION & STORE RESULT
 # -----------------------------------------------------------------------------
-_safe_get_session("latest_summary", None)
-_safe_get_session("latest_hop_profile", None)
-
 if run_button:
     summary = summarize_beer(
         hop_bill,
@@ -375,10 +453,8 @@ if run_button:
         malt_model, malt_df, malt_features, malt_dims,
         yeast_model, yeast_df, yeast_features, yeast_dims
     )
-
     st.session_state.latest_summary = summary
     st.session_state.latest_hop_profile = summary["hop_out"]
-
 
 # -----------------------------------------------------------------------------
 # MAIN BODY
@@ -386,7 +462,6 @@ if run_button:
 st.title("🍺 Beer Recipe Digital Twin")
 st.caption("Predict hop aroma, malt character, and fermentation profile using trained ML models.")
 
-# fetch what we have so far
 summary = st.session_state.latest_summary
 hop_profile = st.session_state.latest_hop_profile
 
@@ -421,7 +496,7 @@ with col_right:
     if summary and summary["malt_traits"]:
         st.write(", ".join(summary["malt_traits"]))
     else:
-        st.write("color_intensity")  # fallback placeholder so it's not blank
+        st.write("color_intensity")
 
     st.markdown("### Yeast character:")
     if summary and summary["yeast_traits"]:
