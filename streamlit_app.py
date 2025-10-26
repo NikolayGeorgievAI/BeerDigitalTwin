@@ -19,14 +19,15 @@ st.set_page_config(
 st.title("🍺 Beer Recipe Digital Twin")
 st.caption("Predict hop aroma, malt character, and fermentation profile using trained ML models.")
 
+
 # ---------------------------------------------------------------------------------
 # CACHED LOADING OF MODELS + DATA
 # ---------------------------------------------------------------------------------
 @st.cache_resource
 def load_models_and_data():
     """
-    Load all heavy assets once, cache them for the session.
-    This prevents Streamlit Cloud from timing out/crashing on import.
+    Load all heavy assets once (models, dataframes).
+    Cached so Streamlit Cloud doesn't try to reload/rebuild on every rerun.
     """
 
     # Load the trained bundles
@@ -59,6 +60,7 @@ def load_models_and_data():
         yeast_model, yeast_features, yeast_dims,
         malt_df, yeast_df
     )
+
 
 # ---------------------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -160,15 +162,15 @@ def summarize_beer(
     top_hops   = [f"{k} ({round(v, 2)})" for k, v in hop_sorted[:2]]
 
     # Malt traits that fired
-    malt_active  = [k for k,v in malt_out.items() if v == 1]
+    malt_active  = [k for k, v in malt_out.items() if v == 1]
 
     # Yeast traits that fired
-    yeast_active = [k for k,v in yeast_out.items() if v == 1]
+    yeast_active = [k for k, v in yeast_out.items() if v == 1]
 
-    # Quick & dirty "style" heuristic
+    # Quick heuristic style call
     style_guess = "Experimental / Hybrid"
 
-    # West Coast-ish / dry clean ales
+    # West Coast-ish / clean dry ales
     if ("clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
         and "dry_finish" in yeast_out and yeast_out["dry_finish"] == 1):
         if any("citrus" in n[0] or "resin" in n[0] for n in hop_sorted[:2]):
@@ -197,53 +199,60 @@ def summarize_beer(
         "style_guess": style_guess
     }
 
+
 # ---------------------------------------------------------------------------------
 # PLOTTING
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
-    Improved radar (spider) chart of hop aroma dimensions:
-    - bigger figure
-    - tighter layout so labels aren't clipped
-    - auto-scale radial limits so negative values or tiny values are still readable
+    Radar chart of hop aroma dimensions.
+    - Bigger figure so labels breathe
+    - Auto-scales radius (handles tiny or negative values)
+    - Hides radial tick labels to avoid overlap with axis labels
     """
     labels = list(hop_profile.keys())
     vals   = np.array(list(hop_profile.values()), dtype=float)
 
-    # angles for each axis
     num_axes = len(labels)
     angles = np.linspace(0, 2*np.pi, num_axes, endpoint=False).tolist()
 
-    # close the polygon
+    # close polygon
     vals_closed   = np.concatenate([vals, [vals[0]]])
     angles_closed = angles + [angles[0]]
 
-    # figure
-    fig, ax = plt.subplots(figsize=(6,6), subplot_kw=dict(polar=True))
-    fig.subplots_adjust(left=0.15, right=0.85, top=0.85, bottom=0.15)
+    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
+    fig.subplots_adjust(left=0.08, right=0.92, top=0.9, bottom=0.1)
 
+    # data polygon
     ax.plot(angles_closed, vals_closed, linewidth=2, color="tab:blue")
     ax.fill(angles_closed, vals_closed, alpha=0.25, color="tab:blue")
 
-    # axis ticks / labels
+    # axis category labels
     ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=10)
+    ax.set_xticklabels(labels, fontsize=12)
 
     # radial scaling
     vmin = min(0, vals.min() * 1.1)
-    vmax = vals.max() * 1.2 if vals.max() > 0 else 0.1
+    vmax_raw = vals.max()
+    vmax = vmax_raw * 1.2 if vmax_raw > 0 else 0.1
     ax.set_ylim(vmin, vmax)
 
-    # radial tick style
-    ax.tick_params(axis="y", labelsize=9)
-    ax.set_rlabel_position(0)
+    # hide radial tick labels (the 0.02 / 0.04 text cluttering the plot)
+    ax.set_yticklabels([])
+    ax.tick_params(axis="y", labelsize=0)
 
-    # grid + title
-    ax.grid(True, linestyle="--", alpha=0.6)
-    ax.set_title(title, size=14, weight="bold", pad=20)
+    # keep radial grid for “spiderweb” look
+    ax.grid(True, linestyle="--", alpha=0.4)
+
+    # title
+    ax.set_title(title, size=16, weight="bold", pad=20)
+
+    # don't force radial label position (prevents extra numeric label at 0°)
+    # ax.set_rlabel_position(0)
 
     plt.tight_layout()
     return fig
+
 
 # ---------------------------------------------------------------------------------
 # APP UI
@@ -282,6 +291,7 @@ hop_bill = {
     hop4_name: hop4_amt,
 }
 
+
 # --- Sidebar: Malt Bill (3-part blend) ----------------------------------------
 st.sidebar.header("Malt Bill")
 
@@ -290,24 +300,30 @@ malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
 malt1_name = st.sidebar.selectbox("Malt 1", malt_options, key="malt1_name")
 malt1_pct  = st.sidebar.number_input(
     "Malt 1 %",
-    min_value=0.0, max_value=100.0,
-    value=70.0, step=1.0,
+    min_value=0.0,
+    max_value=100.0,
+    value=70.0,
+    step=1.0,
     key="malt1_pct"
 )
 
 malt2_name = st.sidebar.selectbox("Malt 2", malt_options, key="malt2_name")
 malt2_pct  = st.sidebar.number_input(
     "Malt 2 %",
-    min_value=0.0, max_value=100.0,
-    value=20.0, step=1.0,
+    min_value=0.0,
+    max_value=100.0,
+    value=20.0,
+    step=1.0,
     key="malt2_pct"
 )
 
 malt3_name = st.sidebar.selectbox("Malt 3", malt_options, key="malt3_name")
 malt3_pct  = st.sidebar.number_input(
     "Malt 3 %",
-    min_value=0.0, max_value=100.0,
-    value=10.0, step=1.0,
+    min_value=0.0,
+    max_value=100.0,
+    value=10.0,
+    step=1.0,
     key="malt3_pct"
 )
 
@@ -317,6 +333,7 @@ malt_selections = [
     {"name": malt3_name, "pct": malt3_pct},
 ]
 
+
 # --- Sidebar: Yeast -----------------------------------------------------------
 st.sidebar.header("Yeast")
 yeast_options = sorted(yeast_df["Name"].dropna().unique().tolist())
@@ -324,6 +341,7 @@ chosen_yeast  = st.sidebar.selectbox("Yeast Strain", yeast_options)
 
 # Predict button
 run_button = st.sidebar.button("Predict Flavor 🧪")
+
 
 # --- Main panel ---------------------------------------------------------------
 if run_button:
