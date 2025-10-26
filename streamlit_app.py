@@ -16,18 +16,13 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🍺 Beer Recipe Digital Twin")
-st.caption("Predict hop aroma, malt character, and fermentation profile using trained ML models.")
-
-
 # ---------------------------------------------------------------------------------
 # CACHED LOADING OF MODELS + DATA
 # ---------------------------------------------------------------------------------
 @st.cache_resource
 def load_models_and_data():
     """
-    Load all heavy assets once (models, dataframes).
-    Cached so Streamlit Cloud doesn't try to reload/rebuild on every rerun.
+    Load all heavy assets once, cache them for the session.
     """
 
     # Load the trained bundles
@@ -117,7 +112,7 @@ def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
 
 def predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims):
     x = get_weighted_malt_vector(malt_selections, malt_df, malt_features)
-    y_pred = malt_model.predict(x)[0]  # usually 0/1 flags for traits
+    y_pred = malt_model.predict(x)[0]  # 0/1 flags for sensory traits
     return dict(zip(malt_dims, y_pred))
 
 
@@ -139,7 +134,7 @@ def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
 
 def predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims):
     x = get_yeast_feature_vector(yeast_name, yeast_df, yeast_features)
-    y_pred = yeast_model.predict(x)[0]  # usually 0/1 flags for traits
+    y_pred = yeast_model.predict(x)[0]  # 0/1 flags for traits
     return dict(zip(yeast_dims, y_pred))
 
 
@@ -162,15 +157,15 @@ def summarize_beer(
     top_hops   = [f"{k} ({round(v, 2)})" for k, v in hop_sorted[:2]]
 
     # Malt traits that fired
-    malt_active  = [k for k, v in malt_out.items() if v == 1]
+    malt_active  = [k for k,v in malt_out.items() if v == 1]
 
     # Yeast traits that fired
-    yeast_active = [k for k, v in yeast_out.items() if v == 1]
+    yeast_active = [k for k,v in yeast_out.items() if v == 1]
 
-    # Quick heuristic style call
+    # Quick & dirty "style" heuristic
     style_guess = "Experimental / Hybrid"
 
-    # West Coast-ish / clean dry ales
+    # West Coast-ish / dry clean ales
     if ("clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
         and "dry_finish" in yeast_out and yeast_out["dry_finish"] == 1):
         if any("citrus" in n[0] or "resin" in n[0] for n in hop_sorted[:2]):
@@ -201,75 +196,85 @@ def summarize_beer(
 
 
 # ---------------------------------------------------------------------------------
-# PLOTTING
+# PLOTTING (RADAR CHART WITH RESCALING)
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
     Radar (spider) chart of hop aroma dimensions.
 
-    Improvements vs prior:
-    - Forces a visible radius even if values are tiny.
-    - Annotates each spoke with its numeric value.
-    - Cleans up ticks so they don't clutter over labels.
-    - Keeps a reasonable figure size for Streamlit layout.
+    - Scales tiny model outputs up visually so you ALWAYS get a readable shape,
+      but still displays the true numeric values as text.
+    - Spreads annotation labels out at the polygon tips (so they don't all pile
+      up in the center).
+    - Keeps a consistent outer radius for compare-ability.
     """
+
     labels = list(hop_profile.keys())
-    vals   = np.array(list(hop_profile.values()), dtype=float)
+    vals   = np.array(list(hop_profile.values()), dtype=float)  # true model outputs
 
     num_axes = len(labels)
     angles = np.linspace(0, 2*np.pi, num_axes, endpoint=False).tolist()
 
-    # Close polygon
-    vals_closed   = np.concatenate([vals, [vals[0]]])
-    angles_closed = angles + [angles[0]]
+    # --- build "display" values we actually plot (so the shape is visible) ---
+    vmin_true = vals.min() if len(vals) else 0.0
+    vmax_true = vals.max() if len(vals) else 0.0
+    range_true = vmax_true - vmin_true
+
+    low_target  = 0.2   # 20% radius
+    high_target = 0.8   # 80% radius
+
+    if range_true < 1e-6:
+        # basically flat line: just make a small constant ring
+        vals_display = np.full_like(vals, 0.5)  # halfway out for visibility
+    else:
+        # linear rescale
+        vals_norm = (vals - vmin_true) / range_true  # 0..1
+        vals_display = low_target + vals_norm * (high_target - low_target)
+
+    # close polygons
+    vals_display_closed = np.concatenate([vals_display, [vals_display[0]]])
+    angles_closed       = angles + [angles[0]]
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
     fig.subplots_adjust(left=0.08, right=0.92, top=0.9, bottom=0.1)
 
-    # Plot the polygon / fill
-    ax.plot(angles_closed, vals_closed, linewidth=2, color="tab:blue")
-    ax.fill(angles_closed, vals_closed, alpha=0.25, color="tab:blue")
+    # Draw polygon
+    ax.plot(angles_closed, vals_display_closed, linewidth=2, color="tab:blue")
+    ax.fill(angles_closed, vals_display_closed, alpha=0.25, color="tab:blue")
 
-    # Category labels around the circle
+    # Category labels around circle
     ax.set_xticks(angles)
     ax.set_xticklabels(labels, fontsize=11)
 
-    # --- radial scaling logic ---
-    vmin_raw = np.min(vals)
-    vmax_raw = np.max(vals)
+    # Fix radial frame 0..1 so charts are visually consistent
+    ax.set_ylim(0, 1.0)
 
-    # allow negatives slightly lower if they exist
-    vmin = min(0, vmin_raw * 1.2)
-
-    # make sure we always have a visible scale:
-    # - if model outputs super tiny numbers (like 0.02), bump to 1.0 so spider isn't a dot
-    min_display_max = 1.0
-    vmax = max(min_display_max, vmax_raw * 1.2 if vmax_raw != 0 else min_display_max)
-
-    ax.set_ylim(vmin, vmax)
-
-    # light spiderweb grid
+    # Nice spider grid
     ax.grid(True, linestyle="--", alpha=0.4)
 
-    # remove radial tick labels (0.02 0.04 0.06 junk)
+    # Hide radial tick text (0.2, 0.4...) because it's rescaled
     ax.set_yticklabels([])
     ax.tick_params(axis="y", labelsize=0)
 
-    # annotate each axis tip with numeric value
-    for angle, value, label in zip(angles, vals, labels):
-        # position slightly past the actual value so we can see the text
-        r_text = value + (vmax * 0.03)
+    # Annotate each spoke with the TRUE (unscaled) value
+    for angle, disp_val, true_val in zip(angles, vals_display, vals):
+        r_text = min(disp_val + 0.05, 0.95)
         ax.text(
             angle,
             r_text,
-            f"{value:.2f}",
+            f"{true_val:.2f}",
             fontsize=9,
             ha="center",
             va="center",
-            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7)
+            bbox=dict(
+                boxstyle="round,pad=0.2",
+                fc="white",
+                ec="gray",
+                lw=0.5,
+                alpha=0.8
+            )
         )
 
-    # title
     ax.set_title(title, size=18, weight="bold", pad=20)
 
     plt.tight_layout()
@@ -277,10 +282,9 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
 
 
 # ---------------------------------------------------------------------------------
-# APP UI
+# SIDEBAR UI
 # ---------------------------------------------------------------------------------
 
-# Load everything (cached)
 (
     hop_model, hop_features, hop_dims,
     malt_model, malt_features, malt_dims,
@@ -288,12 +292,11 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     malt_df, yeast_df
 ) = load_models_and_data()
 
-# --- Sidebar: Hop Bill --------------------------------------------------------
+# HOP BILL INPUTS
 st.sidebar.header("Hop Bill")
 
 all_hops = sorted(get_all_hop_names(hop_features))
 
-# Up to 4 hops with grams each
 hop1_name = st.sidebar.selectbox("Hop 1", all_hops, index=0 if len(all_hops) > 0 else None, key="hop1_name")
 hop1_amt  = st.sidebar.slider(f"{hop1_name} (g)", 0, 120, 40, 5, key="hop1_amt")
 
@@ -313,8 +316,7 @@ hop_bill = {
     hop4_name: hop4_amt,
 }
 
-
-# --- Sidebar: Malt Bill (3-part blend) ----------------------------------------
+# MALT BILL INPUTS
 st.sidebar.header("Malt Bill")
 
 malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
@@ -322,30 +324,24 @@ malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
 malt1_name = st.sidebar.selectbox("Malt 1", malt_options, key="malt1_name")
 malt1_pct  = st.sidebar.number_input(
     "Malt 1 %",
-    min_value=0.0,
-    max_value=100.0,
-    value=70.0,
-    step=1.0,
+    min_value=0.0, max_value=100.0,
+    value=70.0, step=1.0,
     key="malt1_pct"
 )
 
 malt2_name = st.sidebar.selectbox("Malt 2", malt_options, key="malt2_name")
 malt2_pct  = st.sidebar.number_input(
     "Malt 2 %",
-    min_value=0.0,
-    max_value=100.0,
-    value=20.0,
-    step=1.0,
+    min_value=0.0, max_value=100.0,
+    value=20.0, step=1.0,
     key="malt2_pct"
 )
 
 malt3_name = st.sidebar.selectbox("Malt 3", malt_options, key="malt3_name")
 malt3_pct  = st.sidebar.number_input(
     "Malt 3 %",
-    min_value=0.0,
-    max_value=100.0,
-    value=10.0,
-    step=1.0,
+    min_value=0.0, max_value=100.0,
+    value=10.0, step=1.0,
     key="malt3_pct"
 )
 
@@ -355,17 +351,18 @@ malt_selections = [
     {"name": malt3_name, "pct": malt3_pct},
 ]
 
-
-# --- Sidebar: Yeast -----------------------------------------------------------
+# YEAST INPUT
 st.sidebar.header("Yeast")
 yeast_options = sorted(yeast_df["Name"].dropna().unique().tolist())
 chosen_yeast  = st.sidebar.selectbox("Yeast Strain", yeast_options)
 
-# Predict button
 run_button = st.sidebar.button("Predict Flavor 🧪")
 
 
-# --- Main panel ---------------------------------------------------------------
+# ---------------------------------------------------------------------------------
+# MAIN PANEL
+# ---------------------------------------------------------------------------------
+
 if run_button:
     summary = summarize_beer(
         hop_bill,
@@ -382,30 +379,32 @@ if run_button:
     yeast_traits  = summary["yeast_traits"]
     style_guess   = summary["style_guess"]
 
-    # wider left column for radar, tighter right column for text
-    col1, col2 = st.columns([1.4, 0.6])
+    # layout: big chart left, interpretation right
+    left_col, right_col = st.columns([3, 1])
 
-    with col1:
-        st.subheader("Predicted Hop Aroma")
+    with left_col:
         fig = plot_hop_radar(hop_profile, title="Hop Aroma Radar")
         st.pyplot(fig)
 
-        st.markdown("**Top hop notes:**")
+        st.markdown("#### Top hop notes:")
         if hop_notes:
             for n in hop_notes:
-                st.write("- ", n)
+                st.write("•", n)
         else:
             st.write("_No dominant hop note_")
 
-    with col2:
-        st.subheader("Beer Aroma Advisor")
-        st.markdown(f"**Malt character:** {', '.join(malt_traits) if malt_traits else 'None detected'}")
-        st.markdown(f"**Yeast character:** {', '.join(yeast_traits) if yeast_traits else 'None detected'}")
-        st.markdown("**Style direction:**")
-        st.markdown(f"🧭 {style_guess}")
+    with right_col:
+        st.markdown("#### Malt character:")
+        st.write(", ".join(malt_traits) if malt_traits else "None detected")
+
+        st.markdown("#### Yeast character:")
+        st.write(", ".join(yeast_traits) if yeast_traits else "None detected")
+
+        st.markdown("#### Style direction:")
+        st.write(f"🧭 {style_guess}")
 
     with st.expander("Debug / Model Outputs"):
-        st.write("Hop profile (raw):", hop_profile)
+        st.write("Hop profile (raw model outputs):", hop_profile)
         st.write("Malt traits (flags):", malt_traits)
         st.write("Yeast traits (flags):", yeast_traits)
         st.json({
@@ -415,4 +414,6 @@ if run_button:
         })
 
 else:
+    st.title("🍺 Beer Recipe Digital Twin")
+    st.caption("Predict hop aroma, malt character, and fermentation profile using trained ML models.")
     st.info("👈 Build your hop bill (up to 4 hops), malt bill (3 malts with %), choose yeast, then click **Predict Flavor 🧪**.")
