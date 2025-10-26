@@ -70,12 +70,14 @@ def load_models_and_data():
 
 # ---- HOPS ----
 def get_all_hop_names(hop_features):
+    # e.g. feature "hop_Citra" -> name "Citra"
     return [c.replace("hop_", "") for c in hop_features]
 
 def build_hop_features(hop_bill_dict, hop_features):
     """
     hop_bill_dict = {"Citra": 40, "Mosaic": 20, ...}
     Return a row aligned with hop_features order.
+    Each column corresponds to something like 'hop_Citra', 'hop_Mosaic', etc.
     """
     row = []
     for col in hop_features:
@@ -85,7 +87,17 @@ def build_hop_features(hop_bill_dict, hop_features):
     return x
 
 def predict_hop_profile(hop_bill_dict, hop_model, hop_features, hop_dims):
+    """
+    Build hop feature vector, run model, and return {aroma_dim: value}.
+    Also surface a debug table so we can see exactly what we fed the model.
+    """
     x = build_hop_features(hop_bill_dict, hop_features)
+
+    # DEBUG VIEW so we can inspect model input in the UI
+    debug_df = pd.DataFrame(x, columns=hop_features)
+    st.subheader("🔍 Debug: hop model input (what the model actually sees)")
+    st.dataframe(debug_df, use_container_width=True)
+
     y_pred = hop_model.predict(x)[0]  # numeric intensities
     return dict(zip(hop_dims, y_pred))
 
@@ -131,11 +143,11 @@ def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
     if row.empty:
         return np.zeros(len(yeast_features)).reshape(1, -1)
 
-    vec = [
-        row.iloc[0]["Temp_avg_C"],
-        row.iloc[0]["Flocculation_num"],
-        row.iloc[0]["Attenuation_pct"]
-    ]
+    # NOTE: this assumes we trained on exactly these features,
+    # same order as yeast_features
+    vec = []
+    for feat in yeast_features:
+        vec.append(row.iloc[0][feat])
     return np.array(vec).reshape(1, -1)
 
 def predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims):
@@ -197,44 +209,45 @@ def summarize_beer(
 
 
 # -----------------------------------------------------------------------------
-# RADAR PLOT (FIXED VERSION)
+# RADAR PLOT (CLEAN AXIS VERSION)
 # -----------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
-    Radar plot where ticks and labels match exactly.
-    No mismatch / crash anymore.
+    Radar plot for hop aroma profile with clean radial axis (no negatives).
     """
 
-    # If model output is empty (shouldn't happen, but guard anyway)
+    # Fallback if empty
     if not hop_profile:
-        hop_profile = {d: 0.0 for d in [
-            "tropical","citrus","fruity","resinous",
-            "floral","herbal","spicy","earthy"
-        ]}
+        hop_profile = {
+            "tropical": 0.0,
+            "citrus": 0.0,
+            "fruity": 0.0,
+            "resinous": 0.0,
+            "floral": 0.0,
+            "herbal": 0.0,
+            "spicy": 0.0,
+            "earthy": 0.0,
+        }
 
     labels = list(hop_profile.keys())
     values = list(hop_profile.values())
-
     values_arr = np.array(values, dtype=float)
 
-    # We'll close the polygon by repeating first point for plotting,
-    # BUT we will NOT include that duplicate point in the tick labels,
-    # so ticks == unique labels count.
-    closed_values = np.concatenate([values_arr, values_arr[:1]])
-
+    # angles for each category
     n = len(labels)
-
-    # Angles for each unique label
     base_angles = np.linspace(0, 2*np.pi, n, endpoint=False)
-    # Angles for the closed polygon
+
+    # closed polygon coords
     closed_angles = np.concatenate([base_angles, base_angles[:1]])
+    closed_values = np.concatenate([values_arr, values_arr[:1]])
 
     fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
 
+    # polygon
     ax.plot(closed_angles, closed_values, color="#1f77b4", linewidth=2)
     ax.fill(closed_angles, closed_values, color="#1f77b4", alpha=0.25)
 
-    # Put a label with numeric value at each vertex
+    # numeric label at each vertex
     for ang, val in zip(base_angles, values_arr):
         ax.text(
             ang,
@@ -244,23 +257,24 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
             ha="center",
             va="center",
             fontsize=10,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#1f77b4", lw=1)
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#1f77b4", lw=1),
         )
 
-    # Ticks for categories (use ONLY the unique angles + labels)
+    # category ticks
     ax.set_xticks(base_angles)
     ax.set_xticklabels(labels, fontsize=12)
 
-    # Radial grid styling
+    # radial axis from 0 to a nice upper bound
+    max_val = values_arr.max() if values_arr.size > 0 else 0.0
+    upper = max(1.0, max_val * 1.2)
+    ax.set_ylim(0, upper)
+
+    # style
     ax.set_rlabel_position(0)
     ax.yaxis.grid(color="gray", linestyle="--", alpha=0.4)
     ax.xaxis.grid(color="gray", linestyle="--", alpha=0.4)
 
-    # Optional radial limit tweak:
-    # ax.set_ylim(0, max(1.0, values_arr.max()*1.2 if values_arr.max() > 0 else 1.0))
-
     ax.set_title(title, fontsize=24, fontweight="bold", pad=20)
-
     fig.tight_layout()
     return fig
 
@@ -271,16 +285,36 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
 st.sidebar.header("Hop Bill")
 all_hops = sorted(get_all_hop_names(hop_features))
 
-hop1_name = st.sidebar.selectbox("Hop 1", all_hops, index=0 if len(all_hops) > 0 else None, key="hop1_name")
+hop1_name = st.sidebar.selectbox(
+    "Hop 1",
+    all_hops,
+    index=0 if len(all_hops) > 0 else None,
+    key="hop1_name"
+)
 hop1_amt  = st.sidebar.slider(f"{hop1_name} (g)", 0, 120, 40, 5, key="hop1_amt")
 
-hop2_name = st.sidebar.selectbox("Hop 2", all_hops, index=1 if len(all_hops) > 1 else 0, key="hop2_name")
+hop2_name = st.sidebar.selectbox(
+    "Hop 2",
+    all_hops,
+    index=1 if len(all_hops) > 1 else 0,
+    key="hop2_name"
+)
 hop2_amt  = st.sidebar.slider(f"{hop2_name} (g)", 0, 120, 40, 5, key="hop2_amt")
 
-hop3_name = st.sidebar.selectbox("Hop 3", all_hops, index=2 if len(all_hops) > 2 else 0, key="hop3_name")
+hop3_name = st.sidebar.selectbox(
+    "Hop 3",
+    all_hops,
+    index=2 if len(all_hops) > 2 else 0,
+    key="hop3_name"
+)
 hop3_amt  = st.sidebar.slider(f"{hop3_name} (g)", 0, 120, 40, 5, key="hop3_amt")
 
-hop4_name = st.sidebar.selectbox("Hop 4", all_hops, index=3 if len(all_hops) > 3 else 0, key="hop4_name")
+hop4_name = st.sidebar.selectbox(
+    "Hop 4",
+    all_hops,
+    index=3 if len(all_hops) > 3 else 0,
+    key="hop4_name"
+)
 hop4_amt  = st.sidebar.slider(f"{hop4_name} (g)", 0, 120, 40, 5, key="hop4_amt")
 
 hop_bill = {
@@ -290,27 +324,41 @@ hop_bill = {
     hop4_name: hop4_amt,
 }
 
+
 st.sidebar.header("Malt Bill")
 
 malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
 
 malt1_name = st.sidebar.selectbox("Malt 1", malt_options, key="malt1_name")
-malt1_pct  = st.sidebar.number_input("Malt 1 %", min_value=0.0, max_value=100.0,
-                                     value=70.0, step=1.0, key="malt1_pct")
+malt1_pct  = st.sidebar.number_input(
+    "Malt 1 %",
+    min_value=0.0, max_value=100.0,
+    value=70.0, step=1.0,
+    key="malt1_pct"
+)
 
 malt2_name = st.sidebar.selectbox("Malt 2", malt_options, key="malt2_name")
-malt2_pct  = st.sidebar.number_input("Malt 2 %", min_value=0.0, max_value=100.0,
-                                     value=20.0, step=1.0, key="malt2_pct")
+malt2_pct  = st.sidebar.number_input(
+    "Malt 2 %",
+    min_value=0.0, max_value=100.0,
+    value=20.0, step=1.0,
+    key="malt2_pct"
+)
 
 malt3_name = st.sidebar.selectbox("Malt 3", malt_options, key="malt3_name")
-malt3_pct  = st.sidebar.number_input("Malt 3 %", min_value=0.0, max_value=100.0,
-                                     value=10.0, step=1.0, key="malt3_pct")
+malt3_pct  = st.sidebar.number_input(
+    "Malt 3 %",
+    min_value=0.0, max_value=100.0,
+    value=10.0, step=1.0,
+    key="malt3_pct"
+)
 
 malt_selections = [
     {"name": malt1_name, "pct": malt1_pct},
     {"name": malt2_name, "pct": malt2_pct},
     {"name": malt3_name, "pct": malt3_pct},
 ]
+
 
 st.sidebar.header("Yeast")
 yeast_options = sorted(yeast_df["Name"].dropna().unique().tolist())
