@@ -1,0 +1,3 @@
+gfortran
+build-essential
+pkg-config
