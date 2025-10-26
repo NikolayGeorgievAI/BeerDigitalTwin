@@ -154,7 +154,7 @@ def summarize_beer(
 
     # Rank hop notes
     hop_sorted = sorted(hop_out.items(), key=lambda kv: kv[1], reverse=True)
-    top_hops   = [f"{k} ({round(v, 2)})" for k, v in hop_sorted[:2]]
+    top_hops   = [f"{k} ({round(v, 4)})" for k, v in hop_sorted[:2]]
 
     # Malt traits that fired
     malt_active  = [k for k,v in malt_out.items() if v == 1]
@@ -196,73 +196,76 @@ def summarize_beer(
 
 
 # ---------------------------------------------------------------------------------
-# PLOTTING (RADAR CHART WITH RESCALING)
+# PLOTTING (UPDATED RADAR CHART)
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
     Radar (spider) chart of hop aroma dimensions.
 
-    - Scales tiny model outputs up visually so you ALWAYS get a readable shape,
-      but still displays the true numeric values as text.
-    - Spreads annotation labels out at the polygon tips (so they don't all pile
-      up in the center).
-    - Keeps a consistent outer radius for compare-ability.
+    Changes in this version:
+    - We ALWAYS stretch differences to fill most of the circle so you can
+      actually compare hops.
+    - We label each spoke with 4 decimal places so you can see small diffs.
     """
 
     labels = list(hop_profile.keys())
-    vals   = np.array(list(hop_profile.values()), dtype=float)  # true model outputs
+    raw_vals = np.array(list(hop_profile.values()), dtype=float)
 
     num_axes = len(labels)
+    if num_axes == 0:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No hop data", ha="center", va="center")
+        return fig
+
     angles = np.linspace(0, 2*np.pi, num_axes, endpoint=False).tolist()
 
-    # --- build "display" values we actually plot (so the shape is visible) ---
-    vmin_true = vals.min() if len(vals) else 0.0
-    vmax_true = vals.max() if len(vals) else 0.0
-    range_true = vmax_true - vmin_true
+    # --- display scaling ---
+    vmin = float(raw_vals.min())
+    vmax = float(raw_vals.max())
+    rng  = vmax - vmin
 
-    low_target  = 0.2   # 20% radius
-    high_target = 0.8   # 80% radius
+    # we map to [0.1 .. 0.9] of radius to exaggerate differences
+    low_r  = 0.1
+    high_r = 0.9
 
-    if range_true < 1e-6:
-        # basically flat line: just make a small constant ring
-        vals_display = np.full_like(vals, 0.5)  # halfway out for visibility
+    if rng < 1e-12:
+        # all values basically the same
+        disp_vals = np.full_like(raw_vals, (low_r + high_r) / 2.0)
     else:
-        # linear rescale
-        vals_norm = (vals - vmin_true) / range_true  # 0..1
-        vals_display = low_target + vals_norm * (high_target - low_target)
+        norm = (raw_vals - vmin) / rng  # 0..1
+        disp_vals = low_r + norm * (high_r - low_r)
 
-    # close polygons
-    vals_display_closed = np.concatenate([vals_display, [vals_display[0]]])
-    angles_closed       = angles + [angles[0]]
+    # Close polygon
+    disp_closed = np.concatenate([disp_vals, [disp_vals[0]]])
+    ang_closed  = angles + [angles[0]]
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
     fig.subplots_adjust(left=0.08, right=0.92, top=0.9, bottom=0.1)
 
-    # Draw polygon
-    ax.plot(angles_closed, vals_display_closed, linewidth=2, color="tab:blue")
-    ax.fill(angles_closed, vals_display_closed, alpha=0.25, color="tab:blue")
+    # polygon
+    ax.plot(ang_closed, disp_closed, linewidth=2, color="tab:blue")
+    ax.fill(ang_closed, disp_closed, alpha=0.25, color="tab:blue")
 
-    # Category labels around circle
+    # category labels
     ax.set_xticks(angles)
     ax.set_xticklabels(labels, fontsize=11)
 
-    # Fix radial frame 0..1 so charts are visually consistent
+    # set fixed radial range [0..1]
     ax.set_ylim(0, 1.0)
 
-    # Nice spider grid
+    # dashed spider grid
     ax.grid(True, linestyle="--", alpha=0.4)
 
-    # Hide radial tick text (0.2, 0.4...) because it's rescaled
+    # hide numeric radial ticks, they're fake scale
     ax.set_yticklabels([])
     ax.tick_params(axis="y", labelsize=0)
 
-    # Annotate each spoke with the TRUE (unscaled) value
-    for angle, disp_val, true_val in zip(angles, vals_display, vals):
-        r_text = min(disp_val + 0.05, 0.95)
+    # annotate each spoke with REAL value (4 decimals) just past the polygon tip
+    for ang, r_disp, r_true in zip(angles, disp_vals, raw_vals):
         ax.text(
-            angle,
-            r_text,
-            f"{true_val:.2f}",
+            ang,
+            min(r_disp + 0.05, 0.98),
+            f"{r_true:.4f}",
             fontsize=9,
             ha="center",
             va="center",
@@ -271,12 +274,11 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
                 fc="white",
                 ec="gray",
                 lw=0.5,
-                alpha=0.8
-            )
+                alpha=0.8,
+            ),
         )
 
     ax.set_title(title, size=18, weight="bold", pad=20)
-
     plt.tight_layout()
     return fig
 
