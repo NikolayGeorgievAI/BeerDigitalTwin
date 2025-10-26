@@ -66,7 +66,7 @@ def load_models_and_data():
 # UTIL
 # -----------------------------------------------------------------------------
 def _safe_get_session(key, default):
-    """Avoid KeyError on first run. Also don't overwrite if already set."""
+    """Avoid KeyError on first run."""
     if key not in st.session_state:
         st.session_state[key] = default
     return st.session_state[key]
@@ -117,7 +117,7 @@ def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
 
 def predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims):
     x = get_weighted_malt_vector(malt_selections, malt_df, malt_features)
-    y_pred = malt_model.predict(x)[0]  # often 0/1-like trait flags
+    y_pred = malt_model.predict(x)[0]  # often 0/1-ish trait flags
     return dict(zip(malt_dims, y_pred))
 
 # ---- YEAST ----
@@ -154,16 +154,13 @@ def summarize_beer(
     malt_out  = predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims)
     yeast_out = predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims)
 
-    # Top hop notes
     hop_sorted = sorted(hop_out.items(), key=lambda kv: kv[1], reverse=True)
     top_hops   = [f"{k} ({round(v, 2)})" for k, v in hop_sorted[:2]]
 
-    # Malt traits likely "on"
     malt_active = [k for k, v in malt_out.items() if v == 1 or v > 0.5]
-    # Yeast traits likely "on"
     yeast_active = [k for k, v in yeast_out.items() if v == 1 or v > 0.5]
 
-    # Heuristic style guess (same logic we had)
+    # Heuristic "style guess"
     style_guess = "Experimental / Hybrid"
 
     if ("clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
@@ -273,7 +270,7 @@ _safe_get_session("latest_hop_profile", None)
 with st.sidebar:
     st.header("🌿 Hop Bill")
 
-    # Prepare defaults safely before widgets render
+    # Prepare defaults (first run)
     if all_hops_model_knows:
         _safe_get_session("hop1_name", all_hops_model_knows[0])
     else:
@@ -298,55 +295,31 @@ with st.sidebar:
 
     all_hops_sorted = sorted(all_hops_model_knows)
 
-    st.selectbox(
-        "Hop 1",
-        all_hops_sorted,
-        key="hop1_name"
-    )
+    st.selectbox("Hop 1", all_hops_sorted, key="hop1_name")
     st.number_input(
         f"{st.session_state.hop1_name} (g)",
-        min_value=0.0,
-        max_value=200.0,
-        step=1.0,
+        min_value=0.0, max_value=200.0, step=1.0,
         key="hop1_amt"
     )
 
-    st.selectbox(
-        "Hop 2",
-        all_hops_sorted,
-        key="hop2_name"
-    )
+    st.selectbox("Hop 2", all_hops_sorted, key="hop2_name")
     st.number_input(
         f"{st.session_state.hop2_name} (g)",
-        min_value=0.0,
-        max_value=200.0,
-        step=1.0,
+        min_value=0.0, max_value=200.0, step=1.0,
         key="hop2_amt"
     )
 
-    st.selectbox(
-        "Hop 3",
-        all_hops_sorted,
-        key="hop3_name"
-    )
+    st.selectbox("Hop 3", all_hops_sorted, key="hop3_name")
     st.number_input(
         f"{st.session_state.hop3_name} (g)",
-        min_value=0.0,
-        max_value=200.0,
-        step=1.0,
+        min_value=0.0, max_value=200.0, step=1.0,
         key="hop3_amt"
     )
 
-    st.selectbox(
-        "Hop 4",
-        all_hops_sorted,
-        key="hop4_name"
-    )
+    st.selectbox("Hop 4", all_hops_sorted, key="hop4_name")
     st.number_input(
         f"{st.session_state.hop4_name} (g)",
-        min_value=0.0,
-        max_value=200.0,
-        step=1.0,
+        min_value=0.0, max_value=200.0, step=1.0,
         key="hop4_amt"
     )
 
@@ -377,44 +350,14 @@ with st.sidebar:
     _safe_get_session("malt2_pct", 20.0)
     _safe_get_session("malt3_pct", 10.0)
 
-    st.selectbox(
-        "Malt 1",
-        malt_options,
-        key="malt1_name"
-    )
-    st.number_input(
-        "Malt 1 %",
-        min_value=0.0,
-        max_value=100.0,
-        step=1.0,
-        key="malt1_pct"
-    )
+    st.selectbox("Malt 1", malt_options, key="malt1_name")
+    st.number_input("Malt 1 %", min_value=0.0, max_value=100.0, step=1.0, key="malt1_pct")
 
-    st.selectbox(
-        "Malt 2",
-        malt_options,
-        key="malt2_name"
-    )
-    st.number_input(
-        "Malt 2 %",
-        min_value=0.0,
-        max_value=100.0,
-        step=1.0,
-        key="malt2_pct"
-    )
+    st.selectbox("Malt 2", malt_options, key="malt2_name")
+    st.number_input("Malt 2 %", min_value=0.0, max_value=100.0, step=1.0, key="malt2_pct")
 
-    st.selectbox(
-        "Malt 3",
-        malt_options,
-        key="malt3_name"
-    )
-    st.number_input(
-        "Malt 3 %",
-        min_value=0.0,
-        max_value=100.0,
-        step=1.0,
-        key="malt3_pct"
-    )
+    st.selectbox("Malt 3", malt_options, key="malt3_name")
+    st.number_input("Malt 3 %", min_value=0.0, max_value=100.0, step=1.0, key="malt3_pct")
 
     malt_selections = [
         {"name": st.session_state.malt1_name, "pct": st.session_state.malt1_pct},
@@ -429,17 +372,13 @@ with st.sidebar:
     else:
         _safe_get_session("chosen_yeast", "")
 
-    st.selectbox(
-        "Yeast Strain",
-        yeast_options,
-        key="chosen_yeast"
-    )
+    st.selectbox("Yeast Strain", yeast_options, key="chosen_yeast")
 
     run_button = st.button("Predict Flavor 🧪")
 
+    st.divider()
     with st.expander("🍥 Model trained on hops:"):
-        st.write(", ".join(all_hops_model_knows))
-
+        st.caption(", ".join(all_hops_model_knows))
 
 # -----------------------------------------------------------------------------
 # RUN PREDICTION & STORE RESULT
@@ -456,14 +395,15 @@ if run_button:
     st.session_state.latest_summary = summary
     st.session_state.latest_hop_profile = summary["hop_out"]
 
+# Grab current in-session results (may still be None first load)
+summary     = st.session_state.latest_summary
+hop_profile = st.session_state.latest_hop_profile
+
 # -----------------------------------------------------------------------------
 # MAIN BODY
 # -----------------------------------------------------------------------------
 st.title("🍺 Beer Recipe Digital Twin")
 st.caption("Predict hop aroma, malt character, and fermentation profile using trained ML models.")
-
-summary = st.session_state.latest_summary
-hop_profile = st.session_state.latest_hop_profile
 
 col_left, col_right = st.columns([2, 1], vertical_alignment="top")
 
@@ -482,33 +422,29 @@ with col_left:
 
 with col_right:
     st.markdown("### Top hop notes:")
-    if summary:
-        hop_notes = summary["hop_top_notes"]
-        if hop_notes:
-            for n in hop_notes:
-                st.write(f"- {n}")
-        else:
-            st.write("_None_")
+    if summary and summary["hop_top_notes"]:
+        for n in summary["hop_top_notes"]:
+            st.write(f"- {n}")
     else:
-        st.write("_None_")
+        st.write("_–_")
 
     st.markdown("### Malt character:")
     if summary and summary["malt_traits"]:
         st.write(", ".join(summary["malt_traits"]))
     else:
-        st.write("color_intensity")
+        st.write("_–_")
 
     st.markdown("### Yeast character:")
     if summary and summary["yeast_traits"]:
         st.write(", ".join(summary["yeast_traits"]))
     else:
-        st.write("fruity_esters, clean_neutral")
+        st.write("_–_")
 
     st.markdown("### Style direction:")
     if summary:
         st.write(f"🍺 {summary['style_guess']}")
     else:
-        st.write("🍺 Experimental / Hybrid")
+        st.write("_–_")
 
     st.markdown("### Hops used by the model:")
     st.write(", ".join(list(hop_bill.keys())))
