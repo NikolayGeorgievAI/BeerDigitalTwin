@@ -205,10 +205,13 @@ def summarize_beer(
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
-    Radar chart of hop aroma dimensions.
-    - Bigger figure so labels breathe
-    - Auto-scales radius (handles tiny or negative values)
-    - Hides radial tick labels to avoid overlap with axis labels
+    Radar (spider) chart of hop aroma dimensions.
+
+    Improvements vs prior:
+    - Forces a visible radius even if values are tiny.
+    - Annotates each spoke with its numeric value.
+    - Cleans up ticks so they don't clutter over labels.
+    - Keeps a reasonable figure size for Streamlit layout.
     """
     labels = list(hop_profile.keys())
     vals   = np.array(list(hop_profile.values()), dtype=float)
@@ -216,39 +219,58 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     num_axes = len(labels)
     angles = np.linspace(0, 2*np.pi, num_axes, endpoint=False).tolist()
 
-    # close polygon
+    # Close polygon
     vals_closed   = np.concatenate([vals, [vals[0]]])
     angles_closed = angles + [angles[0]]
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
     fig.subplots_adjust(left=0.08, right=0.92, top=0.9, bottom=0.1)
 
-    # data polygon
+    # Plot the polygon / fill
     ax.plot(angles_closed, vals_closed, linewidth=2, color="tab:blue")
     ax.fill(angles_closed, vals_closed, alpha=0.25, color="tab:blue")
 
-    # axis category labels
+    # Category labels around the circle
     ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=12)
+    ax.set_xticklabels(labels, fontsize=11)
 
-    # radial scaling
-    vmin = min(0, vals.min() * 1.1)
-    vmax_raw = vals.max()
-    vmax = vmax_raw * 1.2 if vmax_raw > 0 else 0.1
+    # --- radial scaling logic ---
+    vmin_raw = np.min(vals)
+    vmax_raw = np.max(vals)
+
+    # allow negatives slightly lower if they exist
+    vmin = min(0, vmin_raw * 1.2)
+
+    # make sure we always have a visible scale:
+    # - if model outputs super tiny numbers (like 0.02), bump to 1.0 so spider isn't a dot
+    min_display_max = 1.0
+    vmax = max(min_display_max, vmax_raw * 1.2 if vmax_raw != 0 else min_display_max)
+
     ax.set_ylim(vmin, vmax)
 
-    # hide radial tick labels (the 0.02 / 0.04 text cluttering the plot)
+    # light spiderweb grid
+    ax.grid(True, linestyle="--", alpha=0.4)
+
+    # remove radial tick labels (0.02 0.04 0.06 junk)
     ax.set_yticklabels([])
     ax.tick_params(axis="y", labelsize=0)
 
-    # keep radial grid for “spiderweb” look
-    ax.grid(True, linestyle="--", alpha=0.4)
+    # annotate each axis tip with numeric value
+    for angle, value, label in zip(angles, vals, labels):
+        # position slightly past the actual value so we can see the text
+        r_text = value + (vmax * 0.03)
+        ax.text(
+            angle,
+            r_text,
+            f"{value:.2f}",
+            fontsize=9,
+            ha="center",
+            va="center",
+            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7)
+        )
 
     # title
-    ax.set_title(title, size=16, weight="bold", pad=20)
-
-    # don't force radial label position (prevents extra numeric label at 0°)
-    # ax.set_rlabel_position(0)
+    ax.set_title(title, size=18, weight="bold", pad=20)
 
     plt.tight_layout()
     return fig
@@ -360,7 +382,8 @@ if run_button:
     yeast_traits  = summary["yeast_traits"]
     style_guess   = summary["style_guess"]
 
-    col1, col2 = st.columns([1.3, 1])
+    # wider left column for radar, tighter right column for text
+    col1, col2 = st.columns([1.4, 0.6])
 
     with col1:
         st.subheader("Predicted Hop Aroma")
