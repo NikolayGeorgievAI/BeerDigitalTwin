@@ -33,10 +33,10 @@ def load_models_and_data():
     yeast_bundle = joblib.load("yeast_sensory_model.joblib")
 
     # hop bundle
-    hop_model      = hop_bundle["model"]
-    hop_features   = hop_bundle["feature_cols"]   # e.g. ["hop_Citra", "hop_Mosaic", ...]
-    hop_dims       = hop_bundle["aroma_dims"]     # e.g. ["tropical","citrus","resinous",...]
-    hop_target_scaler = hop_bundle.get("target_scaler", None)
+    hop_model          = hop_bundle["model"]
+    hop_features       = hop_bundle["feature_cols"]   # e.g. ["hop_Citra", "hop_Mosaic", ...]
+    hop_dims           = hop_bundle["aroma_dims"]     # e.g. ["tropical","citrus","resinous",...]
+    hop_target_scaler  = hop_bundle.get("target_scaler", None)
 
     # malt bundle
     malt_model     = malt_bundle["model"]
@@ -80,20 +80,21 @@ def normalize_name_for_feature(hop_name: str) -> str:
         return None
 
     candidates = [
-        f"hop_{hop_name}",
-        f"hop_{hop_name.strip()}",
-        f"hop_{hop_name.replace(' ', '_')}",
-        f"hop_{hop_name.replace('-', '_')}",
-        f"hop_{hop_name.replace(' ', '')}",
-        f"hop_{hop_name.replace(' ', '-')}",
+        "hop_" + hop_name,
+        "hop_" + hop_name.strip(),
+        "hop_" + hop_name.replace(" ", "_"),
+        "hop_" + hop_name.replace("-", "_"),
+        "hop_" + hop_name.replace(" ", ""),
+        "hop_" + hop_name.replace(" ", "-")
     ]
+
     for c in candidates:
         if c in hop_features:
             return c
     return None
 
 
-def build_hop_feature_vector(hop_bill_dict, hop_features):
+def build_hop_feature_vector(hop_bill_dict, hop_features_list):
     """
     hop_bill_dict:
         { "Citra": 40, "Mosaic": 20, ... }
@@ -102,18 +103,20 @@ def build_hop_feature_vector(hop_bill_dict, hop_features):
       x -> shape (1, n_features)
       debug_df -> DataFrame(columns=[feature_col,value]) for display
     """
-    feature_values = np.zeros(len(hop_features), dtype=float)
+    feature_values = np.zeros(len(hop_features_list), dtype=float)
 
-    debug_rows = [{"feature_col": col, "value": 0.0} for col in hop_features]
+    debug_rows = []
+    for col in hop_features_list:
+        debug_rows.append({"feature_col": col, "value": 0.0})
 
     for user_hop_name, grams in hop_bill_dict.items():
         if grams is None or grams <= 0:
             continue
         matched_col = normalize_name_for_feature(user_hop_name)
         if matched_col is not None:
-            idx = hop_features.index(matched_col)
+            idx = hop_features_list.index(matched_col)
             feature_values[idx] = grams
-            # update debug_rows
+            # reflect in debug
             for r in debug_rows:
                 if r["feature_col"] == matched_col:
                     r["value"] = grams
@@ -159,12 +162,14 @@ def rank_top_hop_notes(hop_profile, top_k=2):
     Returns up to top_k notes like ["tropical (0.42)", "citrus (0.33)"].
     """
     sorted_items = sorted(hop_profile.items(), key=lambda kv: kv[1], reverse=True)
-    top_notes = [f"{name} ({round(val, 2)})" for name, val in sorted_items[:top_k]]
+    top_notes = []
+    for (name, val) in sorted_items[:top_k]:
+        top_notes.append(f"{name} ({round(val, 2)})")
     return top_notes
 
 
 # ---- MALTS --------------------------------------------------------------------
-def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
+def get_weighted_malt_vector(malt_selections, malt_df_local, malt_features_list):
     """
     malt_selections:
     [
@@ -175,17 +180,21 @@ def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
 
     Weighted sum of malt chemistry columns.
     """
-    blend_vec = np.zeros(len(malt_features), dtype=float)
+    blend_vec = np.zeros(len(malt_features_list), dtype=float)
 
     for item in malt_selections:
         malt_name = item["name"]
         pct       = float(item["pct"])
 
-        row = malt_df[malt_df["PRODUCT NAME"] == malt_name].head(1)
+        row = malt_df_local[malt_df_local["PRODUCT NAME"] == malt_name].head(1)
         if row.empty:
             continue
 
-        vec = np.array([row.iloc[0][f] for f in malt_features], dtype=float)
+        vec_vals = []
+        for fcol in malt_features_list:
+            vec_vals.append(row.iloc[0][fcol])
+        vec = np.array(vec_vals, dtype=float)
+
         blend_vec += vec * (pct / 100.0)
 
     return blend_vec.reshape(1, -1)
@@ -199,22 +208,26 @@ def predict_malt_profile(malt_selections):
     """
     x = get_weighted_malt_vector(malt_selections, malt_df, malt_features)
     y_pred = malt_model.predict(x)[0]
-    out = dict(zip(malt_dims, y_pred))
-    active_traits = [k for k, v in out.items() if v == 1]
+    out = {}
+    for trait_name, flag_val in zip(malt_dims, y_pred):
+        out[trait_name] = flag_val
+    active_traits = [k for (k, v) in out.items() if v == 1]
     return out, active_traits
 
 
 # ---- YEAST -------------------------------------------------------------------
-def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
+def get_yeast_feature_vector(yeast_name, yeast_df_local, yeast_features_list):
     """
     Build row like [Temp_avg_C, Flocculation_num, Attenuation_pct] in the model's order.
     """
-    row = yeast_df[yeast_df["Name"] == yeast_name].head(1)
+    row = yeast_df_local[yeast_df_local["Name"] == yeast_name].head(1)
     if row.empty:
-        return np.zeros(len(yeast_features)).reshape(1, -1)
+        return np.zeros(len(yeast_features_list)).reshape(1, -1)
 
-    vec = [row.iloc[0][col] for col in yeast_features]
-    return np.array(vec).reshape(1, -1)
+    vals = []
+    for col in yeast_features_list:
+        vals.append(row.iloc[0][col])
+    return np.array(vals).reshape(1, -1)
 
 
 def predict_yeast_profile(yeast_name):
@@ -225,8 +238,10 @@ def predict_yeast_profile(yeast_name):
     """
     x = get_yeast_feature_vector(yeast_name, yeast_df, yeast_features)
     y_pred = yeast_model.predict(x)[0]
-    out = dict(zip(yeast_dims, y_pred))
-    active_traits = [k for k, v in out.items() if v == 1]
+    out = {}
+    for trait_name, flag_val in zip(yeast_dims, y_pred):
+        out[trait_name] = flag_val
+    active_traits = [k for (k, v) in out.items() if v == 1]
     return out, active_traits
 
 
@@ -240,12 +255,17 @@ def summarize_beer(hop_bill, malt_selections, yeast_name):
 
     # crude style guess
     style_guess = "Experimental / Hybrid"
-    if ("clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
-        and "dry_finish" in yeast_out and yeast_out["dry_finish"] == 1):
+    if (
+        "clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
+        and "dry_finish" in yeast_out and yeast_out["dry_finish"] == 1
+    ):
         style_guess = "West Coast IPA / Modern IPA"
 
-    if ("fruity_esters" in yeast_out and yeast_out["fruity_esters"] == 1) and \
-       ("tropical" in hop_profile and hop_profile["tropical"] > 0.6):
+    if (
+        "fruity_esters" in yeast_out and yeast_out["fruity_esters"] == 1
+        and "tropical" in hop_profile
+        and hop_profile["tropical"] > 0.6
+    ):
         style_guess = "Hazy / NEIPA leaning"
 
     if ("phenolic_spicy" in yeast_out and yeast_out["phenolic_spicy"] == 1):
@@ -281,8 +301,8 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
       - polygon = predicted intensity
       - numeric labels near each vertex
     """
-    labels = list(hop_profile.keys())        # e.g. ["tropical","citrus","resinous",...]
-    values = list(hop_profile.values())      # same length
+    labels = list(hop_profile.keys())       # e.g. ["tropical","citrus","resinous",...]
+    values = list(hop_profile.values())     # same length
 
     # for plotting the closed shape we repeat first point at the end
     values_loop = values + [values[0]]
@@ -339,13 +359,12 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
 # ---------------------------------------------------------------------------------
 st.sidebar.header("Hop Bill")
 
-# show hop names cleanly (strip "hop_", turn "_" into " ")
-all_hops_human = sorted(
-    {
-        col.replace("hop_", "").replace("_", " ").strip()
-        for col in hop_features
-    }
-)
+# make human names from hop_features by stripping "hop_" and turning "_" into space
+all_hops_human = []
+for col in hop_features:
+    human_name = col.replace("hop_", "").replace("_", " ").strip()
+    all_hops_human.append(human_name)
+all_hops_human = sorted(set(all_hops_human))
 
 hop1_name = st.sidebar.selectbox("Hop 1", all_hops_human, key="hop1_name")
 hop1_amt  = st.sidebar.slider(f"{hop1_name} (g)", 0, 120, 40, 5, key="hop1_amt")
@@ -419,7 +438,7 @@ if run_button:
     yeast_active    = summary["yeast_active"]
     style_guess     = summary["style_guess"]
 
-    col_left, col_right = st.columns([2, 1], vertical_alignment="top")
+    col_left, col_right = st.columns([2, 1])  # no vertical_alignment kwarg for safety
 
     with col_left:
         fig = plot_hop_radar(hop_profile, title="Hop Aroma Radar")
@@ -434,26 +453,33 @@ if run_button:
             st.write("• _No dominant hop note_")
 
         st.markdown("### Malt character:")
-        st.write(", ".join(malt_active) if malt_active else "None detected")
+        if malt_active:
+            st.write(", ".join(malt_active))
+        else:
+            st.write("None detected")
 
         st.markdown("### Yeast character:")
-        st.write(", ".join(yeast_active) if yeast_active else "None detected")
+        if yeast_active:
+            st.write(", ".join(yeast_active))
+        else:
+            st.write("None detected")
 
         st.markdown("### Style direction:")
         st.write("🍺", style_guess)
 
     with st.expander("Debug / Model I/O"):
         st.write("Hop model input vector shape:", summary["hop_X"].shape)
+
         st.markdown("First 15 hop features + values (grams):")
         st.dataframe(summary["hop_debug_df"].head(15))
 
         st.markdown("Predicted hop intensities (after optional inverse scaling):")
-        ypd = pd.DataFrame(
+        hop_profile_df = pd.DataFrame(
             [summary["hop_profile"]],
             columns=summary["hop_profile"].keys()
         ).T
-        ypd.columns = ["predicted_intensity"]
-        st.dataframe(ypd)
+        hop_profile_df.columns = ["predicted_intensity"]
+        st.dataframe(hop_profile_df)
 
         st.markdown("Malt traits dict:")
         st.json(summary["malt_traits_dict"])
