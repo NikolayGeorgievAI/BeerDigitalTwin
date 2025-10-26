@@ -196,16 +196,17 @@ def summarize_beer(
 
 
 # ---------------------------------------------------------------------------------
-# PLOTTING (UPDATED RADAR CHART)
+# PLOTTING (UPDATED AGAIN)
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
     Radar (spider) chart of hop aroma dimensions.
 
-    Changes in this version:
-    - We ALWAYS stretch differences to fill most of the circle so you can
-      actually compare hops.
-    - We label each spoke with 4 decimal places so you can see small diffs.
+    Goals:
+    - smaller figure for UI
+    - dashed 'spider web' rings at fixed radii
+    - labels with 4 decimals
+    - auto-stretched shape so differences are visible
     """
 
     labels = list(hop_profile.keys())
@@ -213,34 +214,33 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
 
     num_axes = len(labels)
     if num_axes == 0:
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(4.5, 4.5))
         ax.text(0.5, 0.5, "No hop data", ha="center", va="center")
         return fig
 
     angles = np.linspace(0, 2*np.pi, num_axes, endpoint=False).tolist()
 
-    # --- display scaling ---
+    # --- stretch values visually ---
     vmin = float(raw_vals.min())
     vmax = float(raw_vals.max())
     rng  = vmax - vmin
 
-    # we map to [0.1 .. 0.9] of radius to exaggerate differences
-    low_r  = 0.1
-    high_r = 0.9
+    low_r  = 0.2   # a little away from center
+    high_r = 0.9   # close to edge
 
     if rng < 1e-12:
-        # all values basically the same
         disp_vals = np.full_like(raw_vals, (low_r + high_r) / 2.0)
     else:
         norm = (raw_vals - vmin) / rng  # 0..1
         disp_vals = low_r + norm * (high_r - low_r)
 
-    # Close polygon
+    # Close the polygon loop
     disp_closed = np.concatenate([disp_vals, [disp_vals[0]]])
     ang_closed  = angles + [angles[0]]
 
-    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
-    fig.subplots_adjust(left=0.08, right=0.92, top=0.9, bottom=0.1)
+    # --- figure + polar axis ---
+    fig, ax = plt.subplots(figsize=(4.5, 4.5), subplot_kw=dict(polar=True))
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.9, bottom=0.05)
 
     # polygon
     ax.plot(ang_closed, disp_closed, linewidth=2, color="tab:blue")
@@ -248,38 +248,50 @@ def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
 
     # category labels
     ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=11)
+    ax.set_xticklabels(labels, fontsize=10)
 
-    # set fixed radial range [0..1]
+    # radial range [0..1] so we can draw our own rings
     ax.set_ylim(0, 1.0)
 
-    # dashed spider grid
-    ax.grid(True, linestyle="--", alpha=0.4)
-
-    # hide numeric radial ticks, they're fake scale
+    # hide default radial tick labels
     ax.set_yticklabels([])
     ax.tick_params(axis="y", labelsize=0)
 
-    # annotate each spoke with REAL value (4 decimals) just past the polygon tip
+    # custom spider rings at fixed radii
+    ring_levels = [0.2, 0.4, 0.6, 0.8]
+    for r in ring_levels:
+        ax.plot(
+            np.linspace(0, 2*np.pi, 400),
+            [r] * 400,
+            linestyle="--",
+            color="gray",
+            alpha=0.3,
+            linewidth=0.8
+        )
+
+    # spoke lines (center -> each axis)
+    for ang in angles:
+        ax.plot([ang, ang], [0, 1.0], linestyle="--", color="gray", alpha=0.3, linewidth=0.8)
+
+    # annotate each spoke with TRUE numeric value
     for ang, r_disp, r_true in zip(angles, disp_vals, raw_vals):
         ax.text(
             ang,
-            min(r_disp + 0.05, 0.98),
+            min(r_disp + 0.05, 0.95),
             f"{r_true:.4f}",
-            fontsize=9,
+            fontsize=8,
             ha="center",
             va="center",
             bbox=dict(
-                boxstyle="round,pad=0.2",
+                boxstyle="round,pad=0.15",
                 fc="white",
                 ec="gray",
-                lw=0.5,
+                lw=0.4,
                 alpha=0.8,
             ),
         )
 
-    ax.set_title(title, size=18, weight="bold", pad=20)
-    plt.tight_layout()
+    ax.set_title(title, size=14, weight="bold", pad=15)
     return fig
 
 
@@ -381,12 +393,12 @@ if run_button:
     yeast_traits  = summary["yeast_traits"]
     style_guess   = summary["style_guess"]
 
-    # layout: big chart left, interpretation right
-    left_col, right_col = st.columns([3, 1])
+    # layout: chart left (but now fixed width-ish), interpretation right
+    left_col, right_col = st.columns([2, 1])
 
     with left_col:
         fig = plot_hop_radar(hop_profile, title="Hop Aroma Radar")
-        st.pyplot(fig)
+        st.pyplot(fig, use_container_width=False)
 
         st.markdown("#### Top hop notes:")
         if hop_notes:
