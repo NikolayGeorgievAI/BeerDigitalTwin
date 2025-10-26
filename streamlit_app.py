@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
+
 # ---------------------------------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------------------------------
@@ -17,46 +18,35 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------------
-# HEADER
-# ---------------------------------------------------------------------------------
-st.markdown(
-    """
-    <div style="display:flex; align-items:flex-start; gap:0.5rem; flex-wrap:wrap;">
-        <div style="font-size:1.6rem; font-weight:600; line-height:1.2;">
-            🍺 Beer Recipe Digital Twin
-        </div>
-    </div>
-    <div style="color:#666; font-size:0.8rem; margin-top:0.25rem;">
-        Predict hop aroma, malt character, and fermentation profile using trained ML models.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# ---------------------------------------------------------------------------------
 # CACHED LOADING OF MODELS + DATA
 # ---------------------------------------------------------------------------------
 @st.cache_resource
 def load_models_and_data():
     """
-    Load all heavy assets once, cache them for the session.
+    Load heavy assets once and cache for the Streamlit session.
     """
+
+    # Load bundles
     hop_bundle   = joblib.load("hop_aroma_model.joblib")
     malt_bundle  = joblib.load("malt_sensory_model.joblib")
     yeast_bundle = joblib.load("yeast_sensory_model.joblib")
 
+    # Unpack hop bundle
     hop_model      = hop_bundle["model"]
-    hop_features   = hop_bundle["feature_cols"]   # e.g. ['hop_Citra', 'hop_Mosaic', ...]
-    hop_dims       = hop_bundle["aroma_dims"]     # e.g. ['tropical','citrus','resinous',...]
+    hop_features   = hop_bundle["feature_cols"]   # ex: ["hop_Akoya", "hop_African Queen", ...]
+    hop_dims       = hop_bundle["aroma_dims"]     # ex: ["tropical","citrus","resinous",...]
 
+    # Unpack malt bundle
     malt_model     = malt_bundle["model"]
     malt_features  = malt_bundle["feature_cols"]
     malt_dims      = malt_bundle["flavor_cols"]
 
+    # Unpack yeast bundle
     yeast_model    = yeast_bundle["model"]
     yeast_features = yeast_bundle["feature_cols"]
     yeast_dims     = yeast_bundle["flavor_cols"]
 
+    # Load reference data
     malt_df  = pd.read_pickle("clean_malt_df.pkl")
     yeast_df = pd.read_pickle("clean_yeast_df.pkl")
 
@@ -67,88 +57,75 @@ def load_models_and_data():
         malt_df, yeast_df
     )
 
-# load cached objects
-(
-    hop_model, hop_features, hop_dims,
-    malt_model, malt_features, malt_dims,
-    yeast_model, yeast_features, yeast_dims,
-    malt_df, yeast_df
-) = load_models_and_data()
 
 # ---------------------------------------------------------------------------------
-# HELPER FUNCTIONS
+# HOP NAME MAPPING
 # ---------------------------------------------------------------------------------
-
-# ---- HOPS ----
-def get_all_hop_names(hop_features):
+def build_hop_display_mapping(hop_features):
     """
-    Turn ['hop_citra','hop_african_queen', ...] into clean display names
-    ['Citra','African Queen', ...] for the dropdowns.
-    """
-    names = []
-    for c in hop_features:
-        n = c.replace("hop_", "")
-        n = n.replace("_", " ").title()
-        names.append(n)
-    # keep unique in order, then sort for nice UX
-    return sorted(list(dict.fromkeys(names)))
+    We have model feature columns like "hop_African Queen", "hop_Admiral", ...
+    We show the user a clean dropdown name ("African Queen", "Admiral", ...).
+    Then we map back from the user's selection to the full column name.
 
-def normalize_hop_name_for_feature(hop_name_ui):
+    Returns:
+      display_names: sorted list of unique display labels for dropdown
+      display_to_feature: dict like {"African Queen": "hop_African Queen", ...}
     """
-    User sees e.g. "African Queen".
-    Feature might be "hop_african_queen".
-    We'll normalize to 'african_queen' so we can match.
-    """
-    return (
-        hop_name_ui.strip()
-        .lower()
-        .replace(" ", "_")
-    )
-
-def build_hop_features(hop_bill_dict, hop_features):
-    """
-    hop_bill_dict like:
-    {
-        "Citra": 40,
-        "Mosaic": 20,
-        "African Queen": 10,
-        "Admiral": 5
-    }
-
-    We build a row aligned with hop_features.
-    hop_features might look like:
-    ["hop_citra", "hop_mosaic", "hop_african_queen", ...]
-
-    We'll map amounts onto the right columns.
-    """
-    norm_bill = {
-        normalize_hop_name_for_feature(name): amt
-        for name, amt in hop_bill_dict.items()
-    }
-
-    row_vals = []
+    display_to_feature = {}
     for feat in hop_features:
-        feat_hop = feat.replace("hop_", "")
-        feat_norm = feat_hop.strip().lower().replace(" ", "_")
-        row_vals.append(norm_bill.get(feat_norm, 0.0))
+        # Strip the "hop_" prefix to get the nice human name
+        disp = feat.replace("hop_", "")
+        display_to_feature[disp] = feat
 
-    return np.array(row_vals, dtype=float).reshape(1, -1)
+    display_names = sorted(display_to_feature.keys())
+    return display_names, display_to_feature
 
-def predict_hop_profile(hop_bill_dict, hop_model, hop_features, hop_dims):
-    x = build_hop_features(hop_bill_dict, hop_features)
+
+def build_hop_feature_vector(hop_bill_user_display, hop_features, display_to_feature):
+    """
+    hop_bill_user_display looks like:
+      {"Akoya": 40, "African Queen": 60, ...}
+
+    We need to output a 1 x N vector aligned with hop_features.
+    If hop_features[i] == "hop_African Queen" and hop_bill_user_display["African Queen"] = 60,
+    that position gets value 60. Otherwise 0.
+    """
+    vec = []
+    for feat in hop_features:
+        nice_name = feat.replace("hop_", "")
+        amt = hop_bill_user_display.get(nice_name, 0)
+        vec.append(amt)
+    return np.array(vec).reshape(1, -1)
+
+
+def predict_hop_profile(hop_bill_user_display,
+                        hop_model, hop_features, hop_dims,
+                        display_to_feature):
+    """
+    Build proper model input, run hop_model.predict,
+    return {dimension: value}.
+    """
+    x = build_hop_feature_vector(hop_bill_user_display,
+                                 hop_features,
+                                 display_to_feature)
+
     y_pred = hop_model.predict(x)[0]  # numeric intensities per aroma dim
-    return dict(zip(hop_dims, y_pred))
+    return dict(zip(hop_dims, y_pred)), x  # also return x for debug
 
-# ---- MALTS ----
+
+# ---------------------------------------------------------------------------------
+# MALT HELPERS
+# ---------------------------------------------------------------------------------
 def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
     """
-    malt_selections is a list of dicts like:
+    malt_selections is list of:
     [
-      {"name": "Maris Otter", "pct": 70},
-      {"name": "Crystal 60L", "pct": 20},
-      {"name": "Flaked Oats", "pct": 10}
+      {"name": "...", "pct": 70.0},
+      {"name": "...", "pct": 20.0},
+      {"name": "...", "pct": 10.0},
     ]
-    We create a % weighted blend across malt_features.
+
+    We'll create a weighted feature vector (1 x len(malt_features)).
     """
     blend_vec = np.zeros(len(malt_features), dtype=float)
 
@@ -160,21 +137,27 @@ def get_weighted_malt_vector(malt_selections, malt_df, malt_features):
         if row.empty:
             continue
 
-        vec = np.array([row.iloc[0][feat] for feat in malt_features], dtype=float)
+        vec = [row.iloc[0][feat] for feat in malt_features]
+        vec = np.array(vec, dtype=float)
+
         blend_vec += vec * (pct / 100.0)
 
     return blend_vec.reshape(1, -1)
 
-def predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims):
+
+def predict_malt_profile_from_blend(malt_selections,
+                                    malt_model, malt_df, malt_features, malt_dims):
     x = get_weighted_malt_vector(malt_selections, malt_df, malt_features)
-    y_pred = malt_model.predict(x)[0]  # predicted trait flags (0/1 etc.)
+    y_pred = malt_model.predict(x)[0]  # typically 0/1 per flavor trait
     return dict(zip(malt_dims, y_pred))
 
-# ---- YEAST ----
+
+# ---------------------------------------------------------------------------------
+# YEAST HELPERS
+# ---------------------------------------------------------------------------------
 def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
     """
-    Build [Temp_avg_C, Flocculation_num, Attenuation_pct]
-    for the chosen strain.
+    Build a row [Temp_avg_C, Flocculation_num, Attenuation_pct] for this strain.
     """
     row = yeast_df[yeast_df["Name"] == yeast_name].head(1)
     if row.empty:
@@ -185,144 +168,194 @@ def get_yeast_feature_vector(yeast_name, yeast_df, yeast_features):
         row.iloc[0]["Flocculation_num"],
         row.iloc[0]["Attenuation_pct"]
     ]
-    return np.array(vec, dtype=float).reshape(1, -1)
+    return np.array(vec).reshape(1, -1)
 
-def predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims):
+
+def predict_yeast_profile(yeast_name,
+                          yeast_model, yeast_df, yeast_features, yeast_dims):
     x = get_yeast_feature_vector(yeast_name, yeast_df, yeast_features)
-    y_pred = yeast_model.predict(x)[0]  # usually 0/1 flags
+    y_pred = yeast_model.predict(x)[0]  # typically 0/1
     return dict(zip(yeast_dims, y_pred))
 
-# ---- COMBINE EVERYTHING ----
+
+# ---------------------------------------------------------------------------------
+# COMBINE EVERYTHING
+# ---------------------------------------------------------------------------------
 def summarize_beer(
-    hop_bill_dict,
+    hop_bill_user_display,
     malt_selections,
     yeast_name,
     hop_model, hop_features, hop_dims,
     malt_model, malt_df, malt_features, malt_dims,
     yeast_model, yeast_df, yeast_features, yeast_dims,
+    display_to_feature
 ):
-    hop_out   = predict_hop_profile(hop_bill_dict, hop_model, hop_features, hop_dims)
-    malt_out  = predict_malt_profile_from_blend(malt_selections, malt_model, malt_df, malt_features, malt_dims)
-    yeast_out = predict_yeast_profile(yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims)
+    hop_out, hop_model_input_vec = predict_hop_profile(
+        hop_bill_user_display,
+        hop_model, hop_features, hop_dims,
+        display_to_feature
+    )
 
-    # rank hop notes
+    malt_out  = predict_malt_profile_from_blend(
+        malt_selections, malt_model, malt_df, malt_features, malt_dims
+    )
+
+    yeast_out = predict_yeast_profile(
+        yeast_name, yeast_model, yeast_df, yeast_features, yeast_dims
+    )
+
+    # Rank hop notes
     hop_sorted = sorted(hop_out.items(), key=lambda kv: kv[1], reverse=True)
     top_hops   = [f"{k} ({round(v, 2)})" for k, v in hop_sorted[:2]]
 
-    # active grain traits
+    # Active flavors
     malt_active  = [k for k,v in malt_out.items() if v == 1]
-
-    # active yeast traits
     yeast_active = [k for k,v in yeast_out.items() if v == 1]
 
-    # crude style heuristic
+    # Heuristic style
     style_guess = "Experimental / Hybrid"
 
-    if ("clean_neutral" in yeast_out and yeast_out["clean_neutral"] == 1
-        and "dry_finish" in yeast_out and yeast_out["dry_finish"] == 1):
+    if ("clean_neutral" in yeast_out and yeast_out.get("clean_neutral",0) == 1
+        and "dry_finish" in yeast_out and yeast_out.get("dry_finish",0) == 1):
         if any("citrus" in n[0] or "resin" in n[0] for n in hop_sorted[:2]):
             style_guess = "West Coast IPA / Modern IPA"
         else:
             style_guess = "Clean, dry ale"
 
-    if ("fruity_esters" in yeast_out and yeast_out["fruity_esters"] == 1) and \
-       ("tropical" in hop_out and hop_out["tropical"] > 0.6):
+    if (yeast_out.get("fruity_esters",0) == 1) and \
+       (hop_out.get("tropical",0) > 0.6):
         style_guess = "Hazy / NEIPA leaning"
 
-    if ("phenolic_spicy" in yeast_out and yeast_out["phenolic_spicy"] == 1):
+    if yeast_out.get("phenolic_spicy",0) == 1:
         style_guess = "Belgian / Saison leaning"
 
-    if ("caramel" in malt_out and malt_out["caramel"] == 1):
+    if malt_out.get("caramel",0) == 1:
         style_guess = "English / Malt-forward Ale"
 
     return {
         "hop_out": hop_out,
+        "hop_model_input_vec": hop_model_input_vec,
         "hop_top_notes": top_hops,
         "malt_traits": malt_active,
         "yeast_traits": yeast_active,
         "style_guess": style_guess
     }
 
+
 # ---------------------------------------------------------------------------------
 # RADAR PLOT
 # ---------------------------------------------------------------------------------
 def plot_hop_radar(hop_profile, title="Hop Aroma Radar"):
     """
-    Draw a reasonably compact radar chart with readable text.
-    FIXED so tick count == label count.
+    Create a radar (polar) chart with nice size, filled region, and labels.
     """
-    labels_base = list(hop_profile.keys())       # e.g. ['tropical','citrus',...]
-    values_base = list(hop_profile.values())     # same length as labels_base
+    labels = list(hop_profile.keys())
+    values = list(hop_profile.values())
 
-    # close the polygon for plotting
-    values_closed = values_base + [values_base[0]]
+    # close loop
+    labels_loop = labels + [labels[0]]
+    values_loop = values + [values[0]]
 
-    # angles for each category (no wrap)
-    angles_base = np.linspace(0, 2*np.pi, len(labels_base), endpoint=False)
-    # angles for full polygon w/ wrap
-    angles_closed = np.concatenate([angles_base, angles_base[:1]])
+    # angles
+    ang = np.linspace(0, 2*np.pi, len(labels_loop), endpoint=False)
 
-    fig = plt.figure(figsize=(5,5))
-    ax = fig.add_subplot(111, polar=True)
+    fig = plt.figure(figsize=(6,6))
+    ax  = fig.add_subplot(111, polar=True)
 
-    # plot line + fill
-    ax.plot(angles_closed, values_closed, linewidth=2, color="#1f77b4")
-    ax.fill(angles_closed, values_closed, color="#1f77b4", alpha=0.25)
+    # web
+    ax.plot(ang, values_loop, color="#1f77b4", linewidth=2)
+    ax.fill(ang, values_loop, alpha=0.25, color="#1f77b4")
 
-    # set ticks only on real categories (not the wrapped point)
-    ax.set_xticks(angles_base)
-    ax.set_xticklabels(labels_base, fontsize=11)
+    # ticks for axes (spokes)
+    ax.set_xticks(ang[:-1])
+    ax.set_xticklabels(labels, fontsize=12)
 
-    # radial grid style
-    ax.set_rlabel_position(0)
-    ax.tick_params(axis='y', labelsize=9)
-    ax.grid(True, linestyle="--", alpha=0.4)
+    # radial grid aesthetics
+    ax.tick_params(axis='y', labelsize=10)
+    ax.grid(True, linestyle="--", linewidth=0.7, alpha=0.6)
 
-    ax.set_title(title, fontsize=20, fontweight="bold", pad=20)
-
-    # annotate each "real" vertex
-    for ang, val in zip(angles_base, values_base):
-        ax.annotate(
+    # annotate each point (not the closed loop last point)
+    for angle, val in zip(ang[:-1], values):
+        ax.text(
+            angle,
+            val,
             f"{val:.4f}",
-            xy=(ang, val),
-            xytext=(5,5),
-            textcoords="offset points",
-            ha="left",
+            ha="center",
             va="bottom",
-            fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#1f77b4", lw=0.8, alpha=0.8),
-            color="#1f77b4"
+            fontsize=10,
+            bbox=dict(boxstyle="round,pad=0.2",
+                      fc="white", ec="#1f77b4", alpha=0.7)
         )
 
-    fig.tight_layout()
+    ax.set_title(title, fontsize=22, fontweight="bold", pad=20)
     return fig
 
+
 # ---------------------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# LOAD MODELS / DATA
+# ---------------------------------------------------------------------------------
+(
+    hop_model, hop_features, hop_dims,
+    malt_model, malt_features, malt_dims,
+    yeast_model, yeast_features, yeast_dims,
+    malt_df, yeast_df
+) = load_models_and_data()
+
+# Build hop name mapping for dropdowns
+display_hop_names, display_to_feature = build_hop_display_mapping(hop_features)
+
+
+# ---------------------------------------------------------------------------------
+# SIDEBAR INPUTS
 # ---------------------------------------------------------------------------------
 st.sidebar.header("Hop Bill")
 
-all_hops = get_all_hop_names(hop_features)
+# hop 1
+hop1_name = st.sidebar.selectbox(
+    "Hop 1",
+    display_hop_names,
+    index=0 if len(display_hop_names) > 0 else None,
+    key="hop1_name",
+)
+hop1_amt = st.sidebar.slider(f"{hop1_name} (g)", 0, 120, 40, 5, key="hop1_amt")
 
-hop1_name = st.sidebar.selectbox("Hop 1", all_hops, index=0 if len(all_hops)>0 else None, key="hop1_name")
-hop1_amt  = st.sidebar.slider(f"{hop1_name} (g)", 0, 120, 40, 5, key="hop1_amt")
+# hop 2
+hop2_name = st.sidebar.selectbox(
+    "Hop 2",
+    display_hop_names,
+    index=1 if len(display_hop_names) > 1 else 0,
+    key="hop2_name",
+)
+hop2_amt = st.sidebar.slider(f"{hop2_name} (g)", 0, 120, 40, 5, key="hop2_amt")
 
-hop2_name = st.sidebar.selectbox("Hop 2", all_hops, index=1 if len(all_hops)>1 else 0, key="hop2_name")
-hop2_amt  = st.sidebar.slider(f"{hop2_name} (g)", 0, 120, 40, 5, key="hop2_amt")
+# hop 3
+hop3_name = st.sidebar.selectbox(
+    "Hop 3",
+    display_hop_names,
+    index=2 if len(display_hop_names) > 2 else 0,
+    key="hop3_name",
+)
+hop3_amt = st.sidebar.slider(f"{hop3_name} (g)", 0, 120, 40, 5, key="hop3_amt")
 
-hop3_name = st.sidebar.selectbox("Hop 3", all_hops, index=2 if len(all_hops)>2 else 0, key="hop3_name")
-hop3_amt  = st.sidebar.slider(f"{hop3_name} (g)", 0, 120, 40, 5, key="hop3_amt")
+# hop 4
+hop4_name = st.sidebar.selectbox(
+    "Hop 4",
+    display_hop_names,
+    index=3 if len(display_hop_names) > 3 else 0,
+    key="hop4_name",
+)
+hop4_amt = st.sidebar.slider(f"{hop4_name} (g)", 0, 120, 40, 5, key="hop4_amt")
 
-hop4_name = st.sidebar.selectbox("Hop 4", all_hops, index=3 if len(all_hops)>3 else 0, key="hop4_name")
-hop4_amt  = st.sidebar.slider(f"{hop4_name} (g)", 0, 120, 40, 5, key="hop4_amt")
-
-hop_bill = {
+# Build hop bill in *display-name keys*
+hop_bill_user_display = {
     hop1_name: hop1_amt,
     hop2_name: hop2_amt,
     hop3_name: hop3_amt,
     hop4_name: hop4_amt,
 }
 
+
+# Malt bill
 st.sidebar.header("Malt Bill")
 
 malt_options = sorted(malt_df["PRODUCT NAME"].unique().tolist())
@@ -345,23 +378,27 @@ malt_selections = [
     {"name": malt3_name, "pct": malt3_pct},
 ]
 
+
+# Yeast
 st.sidebar.header("Yeast")
 yeast_options = sorted(yeast_df["Name"].dropna().unique().tolist())
 chosen_yeast  = st.sidebar.selectbox("Yeast Strain", yeast_options)
 
 run_button = st.sidebar.button("Predict Flavor 🧪")
 
+
 # ---------------------------------------------------------------------------------
-# MAIN PANEL
+# MAIN LAYOUT
 # ---------------------------------------------------------------------------------
 if run_button:
     summary = summarize_beer(
-        hop_bill,
+        hop_bill_user_display,
         malt_selections,
         chosen_yeast,
         hop_model, hop_features, hop_dims,
         malt_model, malt_df, malt_features, malt_dims,
-        yeast_model, yeast_df, yeast_features, yeast_dims
+        yeast_model, yeast_df, yeast_features, yeast_dims,
+        display_to_feature
     )
 
     hop_profile   = summary["hop_out"]
@@ -369,53 +406,52 @@ if run_button:
     malt_traits   = summary["malt_traits"]
     yeast_traits  = summary["yeast_traits"]
     style_guess   = summary["style_guess"]
+    hop_vec_debug = summary["hop_model_input_vec"]
 
-    # LAYOUT: radar on left, text on right
-    col_left, col_right = st.columns([1.2, 1])
+    # two-column layout: left = radar, right = summary text
+    col1, col2 = st.columns([1.2, 1])
 
-    with col_left:
+    with col1:
         fig = plot_hop_radar(hop_profile, title="Hop Aroma Radar")
         st.pyplot(fig)
 
-    with col_right:
-        st.markdown("### Top hop notes:")
+    with col2:
+        st.subheader("Top hop notes:")
         if hop_notes:
             for n in hop_notes:
                 st.write("•", n)
         else:
-            st.write("_No dominant hop note_")
+            st.write("_no dominant hop note_")
 
-        st.markdown("### Malt character:")
-        st.write(", ".join(malt_traits) if malt_traits else "—")
+        st.subheader("Malt character:")
+        st.write(", ".join(malt_traits) if malt_traits else "_none detected_")
 
-        st.markdown("### Yeast character:")
-        st.write(", ".join(yeast_traits) if yeast_traits else "—")
+        st.subheader("Yeast character:")
+        st.write(", ".join(yeast_traits) if yeast_traits else "_none detected_")
 
-        st.markdown("### Style direction:")
-        st.write(f"🧭 {style_guess}")
+        st.subheader("Style direction:")
+        st.write("🧭", style_guess)
 
-    # ---------------------------------
-    # DEBUG BLOCKS
-    # ---------------------------------
-    with st.expander("Debug / Model Outputs"):
-        st.write("Hop profile (raw):", hop_profile)
-        st.write("Malt traits (flags):", malt_traits)
-        st.write("Yeast traits (flags):", yeast_traits)
+    # Debug info (kept for you to sanity-check the vector isn't all zeros)
+    with st.expander("Debug / Model I/O"):
+        st.markdown("**Hop model input vector shape:**")
+        st.write(hop_vec_debug.shape)
 
-        st.json({
-            "hop_bill (grams)": hop_bill,
-            "malt_bill (%)": malt_selections,
-            "yeast": chosen_yeast
-        })
+        st.markdown("**First 15 hop features (name ➜ value):**")
+        debug_table = []
+        for feat, val in zip(hop_features[:15], hop_vec_debug[0][:15]):
+            debug_table.append({"feature_col": feat, "value": float(val)})
+        st.dataframe(pd.DataFrame(debug_table))
 
-    # EXTRA DEBUG for hop model input/output
-    st.markdown("### Debug: Hop model input/output check")
-    x_debug = build_hop_features(hop_bill, hop_features)
-    st.write("Input shape:", x_debug.shape)
-    st.write("First 10 hop feature names:", hop_features[:10])
-    st.write("First 10 hop feature values:", x_debug[0][:10])
-    y_debug = hop_model.predict(x_debug)
-    st.write("Raw hop_model output:", y_debug)
+        st.markdown("**Raw hop_model output (hop aroma intensities):**")
+        st.write(hop_profile)
+
+        st.markdown("**Malt traits (binary flags):**")
+        st.write(malt_traits)
+
+        st.markdown("**Yeast traits (binary flags):**")
+        st.write(yeast_traits)
 
 else:
-    st.info("👈 Build your hop bill (up to 4 hops), malt bill (3 malts with %), choose yeast, then click **Predict Flavor 🧪**.")
+    st.info("👈 Build your hop bill (set grams), malt bill (%), choose yeast, then click **Predict Flavor 🧪**.")
+
