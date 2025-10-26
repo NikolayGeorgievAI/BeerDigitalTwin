@@ -16,7 +16,7 @@ if run_button:
     yeast_traits = summary["yeast_traits"]
     style_guess  = summary["style_guess"]
 
-    left_col, right_col = st.columns([0.55, 0.45], vertical_alignment="top")
+    left_col, right_col = st.columns([0.6, 0.4], vertical_alignment="top")
 
     with left_col:
         fig = make_spider_plot(hop_out)
@@ -24,6 +24,26 @@ if run_button:
 
     with right_col:
         st.markdown("### Top hop notes:")
-        ...
+        if hop_notes:
+            for n in hop_notes:
+                st.write(f"- {n}")
+        else:
+            st.write("_No dominant hop note_")
+
+        st.markdown("### Malt character:")
+        if malt_traits:
+            st.write(", ".join(malt_traits))
+        else:
+            st.write("None")
+
+        st.markdown("### Yeast character:")
+        if yeast_traits:
+            st.write(", ".join(yeast_traits))
+        else:
+            st.write("None")
+
+        st.markdown("### Style direction:")
+        st.write(f"🧭 {style_guess}")
+
 else:
     st.info("👉 Build your hop bill, malt bill, choose a yeast strain, then click **Predict Flavor 🧪**.")
