@@ -1,5 +1,5 @@
 #########################
-# Beer Recipe Digital Twin (bin-mode final fix)
+# Beer Recipe Digital Twin (final bin fix v2)
 #########################
 
 import streamlit as st
@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple, Optional
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import re
 
 
 #########################
@@ -55,24 +56,30 @@ def load_reference_data():
 
 def _clean_feat_name(txt: str) -> str:
     """
-    Normalize spacing and weird dashes in feature names like "[0 - 100]".
+    Normalize spacing, brackets, unicode dashes, trailing whitespace,
+    etc. e.g. "[0 - 100]g " -> "[0 - 100]".
+    We don't remove the bracket entirely here, but we do trim trailing junk.
     """
     s = str(txt)
+
+    # normalize unicode dashes
     s = s.replace("–", "-").replace("—", "-")
-    s = " ".join(s.split())  # collapse whitespace
-    s = s.strip()
-    return s
+
+    # Collapse repeated spaces
+    s = " ".join(s.split())
+
+    # Strip trailing non-numeric garbage after the last digit or bracket
+    # e.g. "[0 - 100]g" -> "[0 - 100]"
+    m = re.match(r"(.+?)([0-9\]\)])(\D*)$", s)
+    if m:
+        s = m.group(1) + m.group(2)
+
+    return s.strip()
 
 
 class HopModelWrapper:
     """
-    Wrap hop aroma model:
-      - raw joblib could be a Pipeline
-      - or a dict{"model": pipeline, "feature_names":[...]}
-
-    After init:
-      self.model -> estimator with .predict(...)
-      self.feature_names -> cleaned list[str] or None
+    Wrap hop aroma model, normalizing .feature_names.
     """
 
     def __init__(self, raw_obj):
@@ -82,7 +89,7 @@ class HopModelWrapper:
         if raw_obj is None:
             return
 
-        # Case: raw object itself is a model
+        # case 1: raw_obj is already a predictor
         if hasattr(raw_obj, "predict"):
             self.model = raw_obj
             fn = getattr(raw_obj, "feature_names_in_", None)
@@ -91,7 +98,7 @@ class HopModelWrapper:
             else:
                 self.feature_names = None
 
-        # Case: raw object is dict
+        # case 2: raw_obj is a dict { "model": ..., "feature_names": ... }
         elif isinstance(raw_obj, dict):
             mdl = raw_obj.get("model", None)
             feat = raw_obj.get("feature_names", None)
@@ -125,32 +132,53 @@ def load_hop_model():
 
 
 #########################
-# --- HOP FEATURE BIN LOGIC
+# --- BIN PARSING / ALIGNMENT
 #########################
 
 def parse_feature_bin(bin_label: str) -> Tuple[Optional[float], Optional[float]]:
     """
-    Convert e.g. "[0 - 100]" or "0 - 100" into (0.0, 100.0).
+    Convert strings like:
+    "[0 - 100]", "0 - 100", "0-100", "[0-100]"
+    into (0.0, 100.0).
+    We'll aggressively strip brackets & junk and
+    keep only digits / dot / minus / whitespace around '-'.
     """
     if not bin_label:
         return (None, None)
 
     txt = str(bin_label).strip()
-    # strip brackets if present
+    # remove enclosing brackets
     if txt.startswith("[") and txt.endswith("]"):
         txt = txt[1:-1].strip()
 
     # unify dashes
-    txt = txt.replace("–","-").replace("—","-")
+    txt = txt.replace("–", "-").replace("—", "-")
 
-    # now split on '-'
-    parts = [p.strip() for p in txt.split("-")]
-    if len(parts) != 2:
-        return (None, None)
+    # allow something like "0 - 100" or "0-100"
+    # we'll extract the two numbers via regex
+    # pattern: start num, optional spaces/dash, end num
+    m = re.match(r"^\s*([0-9]+(\.[0-9]+)?)\s*-\s*([0-9]+(\.[0-9]+)?)\s*$", txt)
+    if not m:
+        # fallback: split on '-'
+        parts = txt.split("-")
+        if len(parts) != 2:
+            return (None, None)
+        left = parts[0].strip()
+        right = parts[1].strip()
 
+        try:
+            lo = float(left)
+            hi = float(right)
+            return (lo, hi)
+        except ValueError:
+            return (None, None)
+
+    # matched the regex
+    left = m.group(1)
+    right = m.group(3)
     try:
-        lo = float(parts[0])
-        hi = float(parts[1])
+        lo = float(left)
+        hi = float(right)
         return (lo, hi)
     except ValueError:
         return (None, None)
@@ -158,68 +186,86 @@ def parse_feature_bin(bin_label: str) -> Tuple[Optional[float], Optional[float]]
 
 def feature_names_look_like_bins(feat_list: List[str]) -> bool:
     """
-    Return True if every feature name in feat_list parses as a numeric low-high bin.
+    True if *every* feature name in feat_list parses to a numeric bin.
     """
     if not feat_list:
         return False
 
-    parsed_all = True
     for f in feat_list:
         lo, hi = parse_feature_bin(f)
         if lo is None or hi is None:
-            parsed_all = False
-            break
+            return False
 
-    # For your model, there are 4 bins. We'll call that definitely "bin mode".
-    if parsed_all and len(feat_list) <= 10:
-        return True
+    # If they all parse to valid numeric ranges, and there's not a crazy number
+    # of them, we'll say this is definitely "bin mode".
+    return len(feat_list) <= 20
 
-    return False
+
+def assign_mass_to_bins(
+    mass: float,
+    bin_names: List[str]
+) -> Dict[str, float]:
+    """
+    Return a dict {bin_name: 0/1} lighting exactly one bin for that mass.
+    We'll pick the *first* bin whose [lo, hi] range contains 'mass'
+    (inclusive of both ends).
+    """
+    result = {}
+    chosen_index = None
+
+    parsed_bins = []
+    for i, bn in enumerate(bin_names):
+        lo, hi = parse_feature_bin(bn)
+        parsed_bins.append((bn, lo, hi))
+
+    for i, (bn, lo, hi) in enumerate(parsed_bins):
+        if lo is None or hi is None:
+            result[bn] = 0.0
+            continue
+
+        # check inclusive range
+        if (mass >= lo) and (mass <= hi) and chosen_index is None:
+            result[bn] = 1.0
+            chosen_index = i
+        else:
+            result[bn] = 0.0
+
+    return result
 
 
 def build_aligned_df_for_model(
     user_hops: List[Dict[str, float]],
     model_feature_names: Optional[List[str]]
-) -> Tuple[pd.DataFrame, float, Dict[str, float], Dict[str, float]]:
+) -> Tuple[pd.DataFrame, float, Dict[str, float], Dict[str, float], bool]:
     """
     Build the single-row DataFrame for model.predict().
 
-    BIN MODE
-      - model_feature_names are [0 - 100], [100 - 200], ...
-      - We compute total hop mass
-      - Exactly one bin gets 1.0
-
-    SPARSE MODE
-      - features like hop_Adeena, hop_Amarillo, ...
-      - sum grams per hop into those columns
+    Returns:
+        aligned_df,
+        total_hop_mass,
+        bin_debug,
+        sparse_debug,
+        used_bin_mode (bool)
     """
-
     total_hop_mass = sum(float(h.get("amt", 0.0) or 0.0) for h in user_hops)
 
     bin_hits_debug: Dict[str, float] = {}
     sparse_debug: Dict[str, float] = {}
 
-    is_bin_mode = False
+    used_bin_mode = False
     if model_feature_names:
-        is_bin_mode = feature_names_look_like_bins(model_feature_names)
+        used_bin_mode = feature_names_look_like_bins(model_feature_names)
 
-    if is_bin_mode:
-        # build one-hot style row
-        row_dict = {}
-        for feat in model_feature_names:
-            lo, hi = parse_feature_bin(feat)
-            if lo is None or hi is None:
-                row_dict[feat] = 0.0
-                bin_hits_debug[feat] = 0.0
-            else:
-                in_range = 1.0 if (lo <= total_hop_mass <= hi) else 0.0
-                row_dict[feat] = in_range
-                bin_hits_debug[feat] = in_range
+    if used_bin_mode:
+        # one-hot which bin the mass belongs to
+        bin_hits_debug = assign_mass_to_bins(total_hop_mass, model_feature_names)
 
+        # now aligned row in the SAME column order expected by model
+        row_dict = {feat: float(bin_hits_debug.get(feat, 0.0)) for feat in model_feature_names}
         aligned_df = pd.DataFrame([row_dict], index=[0])
 
     else:
-        # sparse mode = each hop_X gets grams
+        # fallback "sparse" mode => sum grams per hop name
         aggregate = {}
         for entry in user_hops:
             hop_name = entry.get("name", "-")
@@ -236,11 +282,12 @@ def build_aligned_df_for_model(
             for feat in model_feature_names:
                 row_dict[feat] = float(aggregate.get(feat, 0.0))
         else:
+            # last last fallback
             row_dict = aggregate if aggregate else {"_dummy": 0.0}
 
         aligned_df = pd.DataFrame([row_dict], index=[0])
 
-    return aligned_df, total_hop_mass, bin_hits_debug, sparse_debug
+    return aligned_df, total_hop_mass, bin_hits_debug, sparse_debug, used_bin_mode
 
 
 #########################
@@ -489,7 +536,7 @@ def main():
 
     hop_entries, malt_entries, yeast_choice, run_button = sidebar_inputs(yeast_df, malt_df)
 
-    aligned_df, total_hop_mass, bin_debug, sparse_debug = build_aligned_df_for_model(
+    aligned_df, total_hop_mass, bin_debug, sparse_debug, used_bin_mode = build_aligned_df_for_model(
         hop_entries,
         hop_wrapper.feature_names
     )
@@ -555,7 +602,9 @@ def main():
 
     st.write("Total hop mass (g):", total_hop_mass)
 
-    st.write("Bin hits (if binned mode):")
+    st.write("used_bin_mode:", used_bin_mode)
+
+    st.write("Bin hits (if bin mode):")
     st.write(bin_debug)
 
     st.write("Sparse aggregate (if sparse mode):")
