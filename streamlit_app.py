@@ -10,6 +10,49 @@ import streamlit as st
 from openai import OpenAI
 from typing import Dict, List
 
+def flavor_tweak_suggestions(goal: str,
+                             hop_pred: dict,
+                             malt_pred: dict,
+                             yeast_pred: dict):
+    """
+    goal: str like "More tropical fruit", "More body / pillowy mouthfeel", ...
+    hop_pred/malt_pred/yeast_pred: the same dicts you already display.
+    Returns list[str] of suggestions.
+    """
+
+    tips = []
+
+    goal = goal.lower()
+
+    if "tropical" in goal or "mango" in goal or "fruit" in goal:
+        tips.append("⬆ Use hops known for mango / pineapple (Citra, Mosaic, Azacca) in whirlpool and dry hop.")
+        tips.append("⬆ Push later additions (post-boil ~75°C) instead of bittering additions.")
+        tips.append("⬇ Avoid piney / grassy hops that mask juicy fruit.")
+    if "body" in goal or "pillowy" in goal or "mouthfeel" in goal:
+        tips.append("⬆ Add flaked oats / wheat malt (5–10%) to boost protein haze and silkiness.")
+        tips.append("⬇ Reduce high attenuation yeast; pick medium-attenuating English/NEIPA strains.")
+        tips.append("⬇ Ferment ~18–20°C to avoid thinning out the body.")
+    if "drier" in goal or "crisper" in goal or "bitter" in goal:
+        tips.append("⬆ Use a higher-attenuating yeast or raise ferm temp slightly for a drier finish.")
+        tips.append("⬆ Add a small early-boil hop charge to introduce a firmer bitterness backbone.")
+        tips.append("⬇ Soften late-fruit-heavy whirlpool if it's too sweet.")
+    if "color" in goal or "darker" in goal or "amber" in goal:
+        tips.append("⬆ Add a touch of light crystal / Vienna / Munich malt for color and depth.")
+        tips.append("⬇ Keep base pale malt but blend 5% toasted malt to get richer hue.")
+    if not tips:
+        tips.append("No preset for that goal yet — try 'More tropical fruit', 'More body / pillowy mouthfeel', or 'Drier / crisper'.")
+
+    # tiny bit of contextual seasoning using live predictions
+    # example: if sweetness already high
+    if malt_pred and "sweetness" in malt_pred and malt_pred["sweetness"] > 15:
+        tips.append("Note: sweetness is already fairly high — consider balancing with a tiny early bittering hop so it doesn't feel cloying.")
+    if yeast_pred and "Attenuation_num" in yeast_pred and yeast_pred["Attenuation_num"] > 0.8:
+        tips.append("Note: attenuation looks high / dry — mouthfeel might thin out if you ferment too warm.")
+
+    return tips
+
+
+
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 # -------------------------------------------------
