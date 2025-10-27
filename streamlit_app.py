@@ -52,24 +52,42 @@ def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
 
     return best_match
 
-def _choices_from_features(feature_cols, prefix):
+def _choices_from_features(feature_cols, preferred_prefix=None):
     """
-    Build nice dropdown display options from model feature columns.
-    Example:
-        ["hop_Citra®", "hop_Mosaic"] -> ["Citra", "Mosaic"]
-    We remove prefix, trademarks, underscores.
+    Turn model feature columns into nice human-readable choices.
+    We try to respect a prefix (like 'malt_' or 'yeast_'), but gracefully
+    fall back to using all columns if none match.
     """
-    names = []
-    for col in feature_cols:
-        if not col.startswith(prefix):
-            continue
-        raw_label = col[len(prefix):]  # cut "hop_" or "malt_" etc.
-        pretty = raw_label.replace("®", "").replace("™", "")
-        pretty = pretty.replace("_", " ").strip()
-        if pretty and pretty not in names:
-            names.append(pretty)
-    names = sorted(names, key=lambda s: s.lower())
-    return names
+
+    def prettify(label: str) -> str:
+        label = label.replace("®", "").replace("™", "")
+        label = label.replace("_", " ").strip()
+        return label
+
+    subset = []
+    if preferred_prefix:
+        for col in feature_cols:
+            if col.startswith(preferred_prefix):
+                raw_label = col[len(preferred_prefix):]
+                subset.append(prettify(raw_label))
+
+    if not subset:
+        for col in feature_cols:
+            cand = col
+            for p in ["malt_", "grain_", "base_", "yeast_", "strain_", "y_", "m_"]:
+                if cand.startswith(p):
+                    cand = cand[len(p):]
+            subset.append(prettify(cand))
+
+    cleaned = []
+    for name in subset:
+        if name and name not in cleaned:
+            cleaned.append(name)
+
+    cleaned = sorted(cleaned, key=lambda s: s.lower())
+    return cleaned
+
+
 
 
 # -------------------------------------------------
@@ -113,6 +131,15 @@ yeast_dims = yeast_bundle["flavor_cols"]
 HOP_CHOICES = _choices_from_features(hop_feature_cols, prefix="hop_")
 MALT_CHOICES = _choices_from_features(malt_feature_cols, prefix="malt_")
 YEAST_CHOICES = _choices_from_features(yeast_feature_cols, prefix="yeast_")
+# DEBUG panel in sidebar so we can see what's inside on Streamlit Cloud
+with st.sidebar:
+    st.header("🔬 Debug model vocab")
+    st.write("hop_feature_cols (first 10):", hop_feature_cols[:10])
+    st.write("malt_feature_cols (first 10):", malt_feature_cols[:10])
+    st.write("yeast_feature_cols (first 10):", yeast_feature_cols[:10])
+    st.write("HOP_CHOICES (first 10):", HOP_CHOICES[:10])
+    st.write("MALT_CHOICES (first 10):", MALT_CHOICES[:10])
+    st.write("YEAST_CHOICES (first 10):", YEAST_CHOICES[:10])
 
 
 # -------------------------------------------------
