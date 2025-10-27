@@ -453,8 +453,12 @@ st.markdown("---")
 # INPUT SECTIONS
 # ---------------------
 
-st.subheader("🌿 Hops (late/aroma additions)")
-c_h1, c_h2, c_h3, c_h4 = st.columns([1,1,1,1])
+# 🌿 HOPS SECTION
+st.markdown("## 🌿 Hops (late/aroma additions)")
+st.caption("Select your hop varieties and specify their addition amounts below.")
+
+c_h1, c_h2 = st.columns(2)
+
 with c_h1:
     hop1 = st.selectbox(
         "Main Hop Variety",
@@ -462,6 +466,15 @@ with c_h1:
         index=HOP_CHOICES.index("Mosaic") if "Mosaic" in HOP_CHOICES else 0,
         key="hop1_select",
     )
+    hop1_amt = st.number_input(
+        "Hop 1 amount (g)",
+        min_value=0.0,
+        max_value=500.0,
+        value=30.0,
+        step=5.0,
+        help="Amount for main hop (late or dry-hop addition)."
+    )
+
 with c_h2:
     hop2 = st.selectbox(
         "Secondary Hop Variety",
@@ -469,13 +482,23 @@ with c_h2:
         index=HOP_CHOICES.index("Citra") if "Citra" in HOP_CHOICES else 0,
         key="hop2_select",
     )
-with c_h3:
-    hop1_amt = st.number_input("Hop 1 amount (g)", min_value=0.0, max_value=500.0, value=30.0, step=5.0)
-with c_h4:
-    hop2_amt = st.number_input("Hop 2 amount (g)", min_value=0.0, max_value=500.0, value=20.0, step=5.0)
+    hop2_amt = st.number_input(
+        "Hop 2 amount (g)",
+        min_value=0.0,
+        max_value=500.0,
+        value=20.0,
+        step=5.0,
+        help="Amount for secondary hop addition."
+    )
 
-st.subheader("🌾 Malt / Grain Bill")
-c_m1, c_m2, c_m3, c_m4 = st.columns([1,1,1,1])
+st.markdown("---")
+
+# 🌾 MALT SECTION
+st.markdown("## 🌾 Malt / Grain Bill")
+st.caption("Define your grist composition as percentages of the total malt bill.")
+
+c_m1, c_m2 = st.columns(2)
+
 with c_m1:
     malt1 = st.selectbox(
         "Base / primary malt",
@@ -483,6 +506,15 @@ with c_m1:
         index=MALT_CHOICES.index("EXTRA PALE MALT") if "EXTRA PALE MALT" in MALT_CHOICES else 0,
         key="malt1_select",
     )
+    malt1_pct = st.number_input(
+        "Malt 1 (% grist)",
+        min_value=0.0,
+        max_value=100.0,
+        value=70.0,
+        step=1.0,
+        help="Percentage of total grist for base malt."
+    )
+
 with c_m2:
     malt2 = st.selectbox(
         "Specialty / character malt",
@@ -490,13 +522,23 @@ with c_m2:
         index=MALT_CHOICES.index("HANÁ MALT") if "HANÁ MALT" in MALT_CHOICES else 0,
         key="malt2_select",
     )
-with c_m3:
-    malt1_pct = st.number_input("Malt 1 (% grist)", min_value=0.0, max_value=100.0, value=70.0, step=1.0)
-with c_m4:
-    malt2_pct = st.number_input("Malt 2 (% grist)", min_value=0.0, max_value=100.0, value=8.0, step=1.0)
+    malt2_pct = st.number_input(
+        "Malt 2 (% grist)",
+        min_value=0.0,
+        max_value=100.0,
+        value=8.0,
+        step=1.0,
+        help="Percentage of total grist for specialty malt."
+    )
 
-st.subheader("🧫 Yeast & Fermentation")
-c_y1, c_y2 = st.columns([1,1])
+st.markdown("---")
+
+# 🧫 YEAST SECTION
+st.markdown("## 🧫 Yeast & Fermentation")
+st.caption("Select your yeast strain and target fermentation temperature.")
+
+c_y1, c_y2 = st.columns(2)
+
 with c_y1:
     yeast_strain = st.selectbox(
         "Yeast strain",
@@ -504,6 +546,7 @@ with c_y1:
         index=0,
         key="yeast_select",
     )
+
 with c_y2:
     ferm_temp_c = st.number_input(
         "Fermentation temp (°C)",
@@ -511,10 +554,11 @@ with c_y2:
         max_value=30.0,
         value=20.0,
         step=0.5,
-        help="This is for your reference and for AI notes, not (yet) fed back into the model.",
+        help="This is for AI notes only; not yet modeled in predictions."
     )
 
 st.markdown("---")
+
 
 # ---------------------
 # PREDICTION BUTTON
