@@ -6,18 +6,18 @@ import streamlit as st
 import matplotlib.pyplot as plt
 
 # ------------------------------------------------------------
-# Config
+# Page / debug mode
 # ------------------------------------------------------------
 st.set_page_config(
     page_title="Beer Recipe Digital Twin",
     layout="wide",
 )
 
-DEBUG_MODE = True  # set False to hide debug sections
+DEBUG_MODE = True  # flip to False later if you want a clean UI
 
 
 # ------------------------------------------------------------
-# Safe data/model loaders
+# Helpers: safe loaders
 # ------------------------------------------------------------
 @st.cache_resource
 def load_pickle(path: str):
@@ -31,81 +31,110 @@ def load_pickle(path: str):
 clean_malt_df = load_pickle("clean_malt_df.pkl")
 clean_yeast_df = load_pickle("clean_yeast_df.pkl")
 
-# hop_aroma_model can sometimes be a dict in your repo,
-# or a sklearn Pipeline, etc. we'll load "as-is"
-hop_aroma_model = load_pickle("hop_aroma_model.joblib")
+_raw_hop_obj = load_pickle("hop_aroma_model.joblib")
 malt_model = load_pickle("malt_sensory_model.joblib")
 yeast_model = load_pickle("yeast_sensory_model.joblib")
 
 
 # ------------------------------------------------------------
-# Small helpers
+# Hop model wrapper
 # ------------------------------------------------------------
-def ensure_listlike(x):
+class HopModelWrapper:
+    """
+    This hides the fact that hop_aroma_model.joblib might be:
+    - a dict like {"model": pipeline, "feature_names": [...], ...}, OR
+    - a direct sklearn pipeline.
+
+    We expose:
+      .model            -> object with .predict()
+      .feature_names    -> list of columns the model expects
+    """
+
+    def __init__(self, raw_obj):
+        self.model = None
+        self.feature_names = []
+
+        if raw_obj is None:
+            return
+
+        # Case A: already a sklearn pipeline with .predict
+        if hasattr(raw_obj, "predict"):
+            self.model = raw_obj
+
+            # Try to detect feature names
+            for attr in ["feature_names_in_", "features_in_", "feature_names_", "columns_"]:
+                if hasattr(raw_obj, attr):
+                    possible = getattr(raw_obj, attr)
+                    self.feature_names = _ensure_list(possible)
+                    break
+
+        # Case B: it's a dict (typical when you joblib.dump({...}))
+        elif isinstance(raw_obj, dict):
+            # Best guess keys:
+            # 'model' should be pipeline, 'feature_names' or 'hop_feature_names' the columns
+            if "model" in raw_obj and hasattr(raw_obj["model"], "predict"):
+                self.model = raw_obj["model"]
+
+            # try known keys for features
+            for key in ["feature_names", "hop_feature_names", "columns", "feature_names_in_"]:
+                if key in raw_obj:
+                    self.feature_names = _ensure_list(raw_obj[key])
+                    break
+
+            # Also check pipeline attributes if not found above
+            if self.model is not None and not self.feature_names:
+                for attr in ["feature_names_in_", "features_in_", "feature_names_", "columns_"]:
+                    if hasattr(self.model, attr):
+                        self.feature_names = _ensure_list(getattr(self.model, attr))
+                        break
+
+
+def _ensure_list(x):
     if x is None:
         return []
-    if isinstance(x, (list, tuple)):
+    if isinstance(x, (list, tuple, np.ndarray, pd.Index)):
         return list(x)
-    try:
-        return list(x)
-    except Exception:
-        return [x]
+    return [x]
 
 
-def unique_sorted_hops_from_model(hop_model_obj) -> list:
+hop_wrapper = HopModelWrapper(_raw_hop_obj)
+
+
+# ------------------------------------------------------------
+# Utility fns
+# ------------------------------------------------------------
+def unique_sorted_hops_from_wrapper(wrapper: HopModelWrapper):
     """
-    Tries very hard to guess the hop variety names / feature columns
-    that the hop model expects. We'll use those to drive the hop name dropdowns.
-    If we can't figure it out from the model, fall back to some placeholder list.
+    Build a nice list of hop names to show in the sidebar dropdown.
+    We'll parse wrapper.feature_names, which might look like ["hop_Simcoe", "hop_Amarillo", ...]
+    We'll strip "hop_" and dedupe.
     """
     fallback = ["Simcoe", "Amarillo", "Astra", "Citra", "Mosaic"]
 
-    if hop_model_obj is None:
-        return fallback
-
-    # case 1: pipeline with feature_names_in_
-    feats = []
-    for attr in ["feature_names_in_", "features_in_", "feature_names_", "columns_", "expected_features"]:
-        if hasattr(hop_model_obj, attr):
-            cand = getattr(hop_model_obj, attr)
-            feats.extend(ensure_listlike(cand))
-
-    # case 2: pipeline.named_steps
-    # sometimes hop_aroma_model["feature_names"] or similar if user stored dict
-    if isinstance(hop_model_obj, dict):
-        # if they've stashed variety names or columns in the dict:
-        for k in ["feature_names", "hop_feature_names", "columns"]:
-            if k in hop_model_obj:
-                feats.extend(ensure_listlike(hop_model_obj[k]))
-
-    # Clean up
-    feats = [str(f) for f in feats if isinstance(f, (str, int, float))]
-    feats = list(dict.fromkeys(feats))  # dedupe preserve order
-
-    # Some models store columns like hop_Simcoe, hop_Amarillo -> strip 'hop_'
+    feats = _ensure_list(wrapper.feature_names)
     cleaned = []
-    for col in feats:
-        c = str(col)
-        if c.startswith("hop_"):
-            c = c.replace("hop_", "")
-        cleaned.append(c)
+    for f in feats:
+        s = str(f)
+        if s.startswith("hop_"):
+            s = s.replace("hop_", "", 1)
+        if s and s not in cleaned:
+            cleaned.append(s)
 
-    cleaned = [c for c in cleaned if c not in ["", "None", "nan"]]
-    if len(cleaned) == 0:
+    if not cleaned:
         return fallback
 
-    # limit to a sane subset
+    # keep first ~30 just to avoid a monster dropdown
     return cleaned[:30]
 
 
 def aggregate_user_hops(hop_inputs):
     """
-    hop_inputs = list of (hop_name, grams).
-    We'll collapse duplicates and sum grams.
-    Returns dict { "Simcoe": total_grams, "Citra": total_grams, ... }
+    hop_inputs = list of (hop_name, grams)
+    Combine duplicates and drop zeros.
+    Returns dict like {"Simcoe": 100, "Amarillo": 50}
     """
     agg = {}
-    for (name, grams) in hop_inputs:
+    for name, grams in hop_inputs:
         if not name or name.strip() == "-":
             continue
         if grams <= 0:
@@ -114,96 +143,161 @@ def aggregate_user_hops(hop_inputs):
     return agg
 
 
-def build_model_input_df(agg_hops: dict, model_feature_names: list):
+def build_aligned_df(agg_hops: dict, wrapper: HopModelWrapper):
     """
-    Create a single-row DF whose columns match the model's expected
-    hop columns (like hop_Simcoe, hop_Citra, etc). We'll fill grams for any
-    variety the user used, 0 otherwise.
-    If we can't figure out the model's feature names, we fallback to the
-    user's keys directly (still 1-row).
+    Build a single-row DataFrame whose columns match wrapper.feature_names.
+    We'll fill 0 if user didn't include that hop.
+    If wrapper has no feature names, fallback to just user's hops.
     """
-    if model_feature_names and len(model_feature_names) > 0:
-        cols = []
-        for feat in model_feature_names:
-            # unify 'hop_Simcoe' style
-            feat_str = str(feat)
-            hop_var = feat_str
-            if feat_str.startswith("hop_"):
-                hop_var = feat_str.replace("hop_", "")
-            cols.append(feat_str)
 
+    feats = _ensure_list(wrapper.feature_names)
+
+    if feats:
+        # e.g. feats = ["hop_Simcoe","hop_Amarillo",...]
         data = {}
-        for feat_str in cols:
-            hop_var = feat_str
+        for col in feats:
+            hop_var = col
             if hop_var.startswith("hop_"):
-                hop_var = hop_var.replace("hop_", "")
-
+                hop_var = hop_var.replace("hop_", "", 1)
             grams = agg_hops.get(hop_var, 0.0)
-            data[feat_str] = [grams]
+            data[col] = [grams]
         return pd.DataFrame(data)
     else:
-        # fallback: just build columns from agg_hops
+        # fallback columns from user
         if len(agg_hops) == 0:
-            # user added nothing, produce a single row of zero
             return pd.DataFrame([0.0], index=["0"], columns=["total_hops"])
-        else:
-            return pd.DataFrame([agg_hops])
+        return pd.DataFrame([agg_hops])
 
 
-def safe_pipeline_predict(pipeline_obj, X_df: pd.DataFrame):
+def safe_hop_predict(wrapper: HopModelWrapper, X_df: pd.DataFrame):
     """
-    Try to call pipeline_obj.predict(X_df) and return np.array of scores.
-    If it fails (like feature mismatch), return None and the error text.
+    Try to call wrapper.model.predict(X_df). Return (np_array or None, error_message or None)
     """
-    if pipeline_obj is None:
-        return None, "hop_model is None (not loaded)"
+    if wrapper.model is None:
+        return None, "No usable hop model inside joblib (no .predict)."
+
     try:
-        preds = pipeline_obj.predict(X_df)
+        preds = wrapper.model.predict(X_df)
         return preds, None
     except Exception as e:
         return None, f"Predict exception: {e}"
 
 
-def radial_plot(scores_dict, ax=None, annotate_center_val=None):
+def summarize_hop_aroma_vector(values):
     """
-    scores_dict: {axis_label: value, ...} in circular order
-    We'll draw a radar / spider.
-    If values missing or None -> treat as 0.
+    values is the numeric spider vector [tropical, citrus, fruity, resinous, floral,
+                                       herbal, spicy, earthy]
+    We'll pick the top 2.
+    """
+    labels = [
+        "tropical", "citrus", "fruity", "resinous",
+        "floral", "herbal", "spicy", "earthy",
+    ]
+
+    if not values:
+        return [("tropical", 0.0), ("citrus", 0.0)]
+
+    pairs = [(labels[i], float(values[i])) for i in range(min(len(labels), len(values)))]
+    pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
+    return pairs_sorted[:2] if pairs_sorted else [("tropical", 0.0), ("citrus", 0.0)]
+
+
+def descriptive_malt_profile(malt_model_obj, malt_inputs_dict):
+    """
+    Placeholder malt logic. We'll just guess 'bready' / 'roasty' etc.
+    """
+    # find top malt %
+    top_pct = 0.0
+    top_name = "-"
+    for key, val in malt_inputs_dict.items():
+        if key.endswith("_pct"):
+            if val > top_pct:
+                prefix = key.split("_pct")[0]  # e.g. 'malt1'
+                name_key = prefix + "_name"
+                nm = malt_inputs_dict.get(name_key, "-")
+                top_pct = val
+                top_name = nm
+
+    if "BLACK" in str(top_name).upper():
+        return "roasty / burnt"
+    if "AMBER" in str(top_name).upper():
+        return "bready"
+    if "BEST" in str(top_name).upper() or "PALE" in str(top_name).upper():
+        return "bready"
+
+    return "bready"
+
+
+def descriptive_yeast_profile(yeast_model_obj, yeast_choice, clean_yeast_df):
+    """
+    Pull a short descriptor from columns like fruity_esters / clean_neutral.
+    Also guess a 'style direction'.
+    """
+    if not yeast_choice or yeast_choice == "-":
+        return ("clean / neutral", "Experimental / Hybrid")
+
+    if clean_yeast_df is None or "Name" not in clean_yeast_df.columns:
+        return ("clean / neutral", "Experimental / Hybrid")
+
+    row = clean_yeast_df[clean_yeast_df["Name"] == yeast_choice]
+    if row.empty:
+        return ("clean / neutral", "Experimental / Hybrid")
+
+    row = row.iloc[0]
+    notes = []
+
+    if "clean_neutral" in row and row["clean_neutral"] == 1:
+        notes.append("clean / neutral")
+    if "fruity_esters" in row and row["fruity_esters"] == 1:
+        notes.append("fruity esters")
+    if "phenolic_spicy" in row and row["phenolic_spicy"] == 1:
+        notes.append("spicy phenolics")
+    if not notes:
+        notes.append("clean / neutral")
+
+    style_guess = "Experimental / Hybrid"
+    if "Notes" in row and isinstance(row["Notes"], str):
+        txt = row["Notes"].lower()
+        if "lager" in txt:
+            style_guess = "Clean / Neutral Ale direction"
+        elif "ester" in txt:
+            style_guess = "Fruity / English style"
+
+    return (", ".join(notes), style_guess)
+
+
+def draw_radar(scores_dict):
+    """
+    scores_dict = Ordered mapping of labels -> value (floats)
+    We'll draw a spider plot with those values.
     """
     labels = list(scores_dict.keys())
-    values = [max(0.0, float(scores_dict[k] or 0.0)) for k in labels]
+    vals = [float(scores_dict[k]) for k in labels]
 
-    N = len(labels)
-    if N == 0:
-        labels = ["tropical", "citrus", "fruity", "resinous", "floral",
-                  "herbal", "spicy", "earthy"]
-        values = [0]*len(labels)
-        N = len(labels)
-
-    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
-    values += values[:1]
+    # close the loop
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    vals += vals[:1]
     angles += angles[:1]
 
-    if ax is None:
-        fig, ax = plt.subplots(subplot_kw=dict(polar=True))
-    else:
-        fig = ax.figure
-        ax.set_theta_offset(0)
+    fig, ax = plt.subplots(
+        subplot_kw=dict(polar=True),
+        figsize=(6, 6),
+        dpi=150
+    )
 
-    ax.plot(angles, values, color="#2F3A56", linewidth=2)
-    ax.fill(angles, values, color="#2F3A56", alpha=0.2)
+    ax.plot(angles, vals, color="#2F3A56", linewidth=2)
+    ax.fill(angles, vals, color="#2F3A56", alpha=0.2)
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(labels)
-    ax.set_yticks(np.linspace(0, max(1.0, max(values)), 5))
-    ax.set_yticklabels([f"{y:.1f}" for y in np.linspace(0, max(1.0, max(values)), 5)])
-    ax.set_ylim(0, max(1.0, max(values)))
 
-    # Show center annotation (like "0.00")
-    if annotate_center_val is None:
-        center_val = np.mean(values[:-1]) if len(values) > 1 else 0.0
-    else:
-        center_val = annotate_center_val
+    vmax = max(1.0, max(vals))
+    yticks = np.linspace(0, vmax, 5)
+    ax.set_yticks(yticks)
+    ax.set_yticklabels([f"{y:.1f}" for y in yticks])
+    ax.set_ylim(0, vmax)
+
+    center_val = np.mean(vals[:-1]) if len(vals) > 1 else 0.0
     ax.text(
         0,
         0,
@@ -215,121 +309,27 @@ def radial_plot(scores_dict, ax=None, annotate_center_val=None):
         color="#2F3A56",
     )
 
-    return fig, ax
-
-
-def summarize_hop_aroma_vector(raw_scores):
-    """
-    Takes a numeric vector of hop aroma intensities [tropical, citrus, fruity, ...]
-    Returns top 2 note names + (value).
-    We'll just return placeholders if we can't parse.
-    """
-    if raw_scores is None or len(raw_scores) == 0:
-        return [("tropical", 0.0), ("citrus", 0.0)]
-
-    # define label order for final plot
-    label_order = [
-        "tropical", "citrus", "fruity", "resinous",
-        "floral", "herbal", "spicy", "earthy",
-    ]
-    n = min(len(label_order), len(raw_scores))
-    pairs = []
-    for i in range(n):
-        pairs.append((label_order[i], float(raw_scores[i])))
-
-    # sort descending
-    pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
-    top2 = pairs_sorted[:2]
-    return top2 if len(top2) > 0 else [("tropical", 0.0), ("citrus", 0.0)]
-
-
-def descriptive_malt_profile(malt_model_obj, malt_inputs_dict):
-    """
-    Basic placeholder malt text. You can hook into malt_model if you
-    later train it. For now we guess by which malt % is highest.
-    malt_inputs_dict = { 'malt1_name':..., 'malt1_pct':..., etc. }
-    """
-    # trivial heuristic
-    top_name = "-"
-    top_pct = 0.0
-    for k, v in malt_inputs_dict.items():
-        if k.endswith("_pct"):
-            if v > top_pct:
-                # figure out which malt name goes with this pct
-                malt_idx = k.split("_")[0]  # 'malt1'
-                nm_key = malt_idx + "_name"
-                nm_val = malt_inputs_dict.get(nm_key, "-")
-                top_pct = v
-                top_name = nm_val
-
-    # very naive mapping -> text
-    if "BLACK" in str(top_name).upper():
-        return "roasty / burnt"
-    if "AMBER" in str(top_name).upper():
-        return "bready"
-    if "BEST" in str(top_name).upper() or "PALE" in str(top_name).upper():
-        return "bready"
-    return "bready"
-
-
-def descriptive_yeast_profile(yeast_model_obj, yeast_choice: str, clean_yeast_df: pd.DataFrame):
-    """
-    We'll look up the chosen yeast in clean_yeast_df and grab 1-2
-    flavor descriptors from columns 'fruity_esters', 'clean_neutral', etc.
-    We return a tuple (yeast_flavor_text, style_direction_text).
-    """
-    if not yeast_choice or yeast_choice.strip() == "-":
-        return ("clean / neutral", "Experimental / Hybrid")
-
-    if clean_yeast_df is None or "Name" not in clean_yeast_df.columns:
-        return ("clean / neutral", "Experimental / Hybrid")
-
-    row = clean_yeast_df[clean_yeast_df["Name"] == yeast_choice]
-    if row.empty:
-        return ("clean / neutral", "Experimental / Hybrid")
-
-    row = row.iloc[0]
-    # Build a short descriptor. We'll check these columns if they exist:
-    char_bits = []
-    if "clean_neutral" in row and row["clean_neutral"] == 1:
-        char_bits.append("clean / neutral")
-    if "fruity_esters" in row and row["fruity_esters"] == 1:
-        char_bits.append("fruity esters")
-    if "phenolic_spicy" in row and row["phenolic_spicy"] == 1:
-        char_bits.append("spicy phenolics")
-    if len(char_bits) == 0:
-        char_bits.append("clean / neutral")
-
-    # style direction guess:
-    style_dir = "Experimental / Hybrid"
-    if "Notes" in row and isinstance(row["Notes"], str):
-        # extremely naive guess
-        if "lager" in row["Notes"].lower():
-            style_dir = "Clean / Neutral Ale direction"
-        elif "ester" in row["Notes"].lower():
-            style_dir = "Fruity / English style"
-    return (", ".join(char_bits), style_dir)
+    return fig
 
 
 # ------------------------------------------------------------
-# Sidebar UI
+# Sidebar
 # ------------------------------------------------------------
 def sidebar_inputs(hop_variety_list):
-    st.sidebar.header("Model Inputs", anchor=None)
+    st.sidebar.header("Model Inputs")
     st.sidebar.subheader("Hop Bill (g)")
 
-    # We'll allow up to 3 hop slots
     hop_inputs = []
     for i in range(3):
-        col1, col2 = st.sidebar.columns([2, 1])
-        with col1:
+        c1, c2 = st.sidebar.columns([2, 1])
+        with c1:
             hop_name = st.selectbox(
                 f"Hop {i+1}",
                 options=["-"] + hop_variety_list,
                 index=0,
                 key=f"hop_name_{i}",
             )
-        with col2:
+        with c2:
             hop_amt = st.number_input(
                 f"{hop_name} (g)",
                 min_value=0.0,
@@ -342,7 +342,6 @@ def sidebar_inputs(hop_variety_list):
 
     st.sidebar.subheader("Malt Bill")
     malt_inputs = {}
-    # malt1
     malt_inputs["malt1_name"] = st.sidebar.selectbox(
         "Malt 1",
         options=["BEST ALE MALT", "AMBER MALT", "BLACK MALT", "PALE MALT"],
@@ -358,7 +357,6 @@ def sidebar_inputs(hop_variety_list):
         key="malt1_pct_key",
     )
 
-    # malt2
     malt_inputs["malt2_name"] = st.sidebar.selectbox(
         "Malt 2",
         options=["BEST ALE MALT", "AMBER MALT", "BLACK MALT", "PALE MALT"],
@@ -374,7 +372,6 @@ def sidebar_inputs(hop_variety_list):
         key="malt2_pct_key",
     )
 
-    # malt3
     malt_inputs["malt3_name"] = st.sidebar.selectbox(
         "Malt 3",
         options=["BEST ALE MALT", "AMBER MALT", "BLACK MALT", "PALE MALT"],
@@ -391,22 +388,17 @@ def sidebar_inputs(hop_variety_list):
     )
 
     st.sidebar.subheader("Yeast Strain")
-    yeast_choice = "-"
     if clean_yeast_df is not None and "Name" in clean_yeast_df.columns:
         yeast_list = ["-"] + sorted(clean_yeast_df["Name"].astype(str).unique().tolist())
-        yeast_choice = st.sidebar.selectbox(
-            "Select yeast",
-            options=yeast_list,
-            index=0,
-            key="yeast_choice_key",
-        )
     else:
-        yeast_choice = st.sidebar.selectbox(
-            "Select yeast",
-            options=["-"],
-            index=0,
-            key="yeast_choice_key_fallback",
-        )
+        yeast_list = ["-"]
+
+    yeast_choice = st.sidebar.selectbox(
+        "Select yeast",
+        options=yeast_list,
+        index=0,
+        key="yeast_choice_key",
+    )
 
     run_button = st.sidebar.button("Predict Flavor 🧪", key="predict_button_key")
 
@@ -414,7 +406,7 @@ def sidebar_inputs(hop_variety_list):
 
 
 # ------------------------------------------------------------
-# Main App
+# Main app
 # ------------------------------------------------------------
 def main():
     st.title("🍺 Beer Recipe Digital Twin")
@@ -422,92 +414,60 @@ def main():
         "Predict hop aroma, malt character, and fermentation profile using trained ML models (work in progress)."
     )
 
-    # figure out hop variety list from model
-    hop_variety_list = unique_sorted_hops_from_model(hop_aroma_model)
+    hop_variety_list = unique_sorted_hops_from_wrapper(hop_wrapper)
 
     hop_inputs, malt_inputs, yeast_choice, run_button = sidebar_inputs(hop_variety_list)
 
-    # prep data for hop model
+    # aggregate hop bill
     agg_hops = aggregate_user_hops(hop_inputs)
 
-    # figure out the model's feature columns
-    hop_feature_names = []
-    if hasattr(hop_aroma_model, "feature_names_in_"):
-        hop_feature_names = list(hop_aroma_model.feature_names_in_)
-    elif hasattr(hop_aroma_model, "features_in_"):
-        hop_feature_names = list(hop_aroma_model.features_in_)
-    elif isinstance(hop_aroma_model, dict) and "feature_names" in hop_aroma_model:
-        hop_feature_names = list(hop_aroma_model["feature_names"])
-
-    aligned_df = build_model_input_df(agg_hops, hop_feature_names)
+    # build input DF for hop model
+    aligned_df = build_aligned_df(agg_hops, hop_wrapper)
 
     aroma_scores = None
     model_error = None
 
     if run_button:
-        if hop_aroma_model is not None:
-            aroma_scores, model_error = safe_pipeline_predict(hop_aroma_model, aligned_df)
-            # aroma_scores could be None, or could be array-like
-        else:
-            model_error = "No hop_aroma_model loaded."
+        aroma_scores, model_error = safe_hop_predict(hop_wrapper, aligned_df)
 
-    # Now build the radar data.
-    # We'll parse aroma_scores (if any) and create a dict of {label: score}
+    # Build radar spider data
     label_order = [
         "tropical", "citrus", "fruity", "resinous",
         "floral", "herbal", "spicy", "earthy",
     ]
 
-    radar_dict = {}
-    if aroma_scores is not None and not isinstance(aroma_scores, str):
-        # assume shape (1, N) or (N,)
-        try:
-            arr = np.array(aroma_scores).flatten().tolist()
-        except Exception:
-            arr = []
-        for i, lbl in enumerate(label_order):
-            val = arr[i] if i < len(arr) else 0.0
-            radar_dict[lbl] = float(val)
-    else:
-        # fallback 0 spider
-        for lbl in label_order:
-            radar_dict[lbl] = 0.0
+    radar_values = [0.0]*len(label_order)
+    if aroma_scores is not None:
+        # flatten first row
+        arr = np.array(aroma_scores).flatten().tolist()
+        for i in range(min(len(arr), len(radar_values))):
+            radar_values[i] = float(arr[i])
 
-    # top hop notes
-    top2_notes = summarize_hop_aroma_vector(
-        [radar_dict[lbl] for lbl in label_order]
-    )
-    # e.g. [("tropical", 0.12), ("citrus", 0.07)]
+    radar_dict = {lbl: radar_values[i] for i, lbl in enumerate(label_order)}
 
-    # Malt text
+    # Top hop notes
+    top2_notes = summarize_hop_aroma_vector(radar_values)
+
+    # Malt
     malt_desc = descriptive_malt_profile(malt_model, malt_inputs)
 
-    # Yeast text
-    yeast_desc, style_dir = descriptive_yeast_profile(yeast_model, yeast_choice, clean_yeast_df)
+    # Yeast
+    yeast_desc, style_dir = descriptive_yeast_profile(
+        yeast_model, yeast_choice, clean_yeast_df
+    )
 
-    # Layout for radar + side text
+    # Layout display
     col_plot, col_text = st.columns([2, 1])
 
     with col_plot:
         st.subheader("Hop Aroma Radar")
-        fig, ax = plt.subplots(
-            subplot_kw=dict(polar=True),
-            figsize=(6, 6),
-            dpi=150
-        )
-        # We'll reorder radar_dict to [tropical,citrus,fruity,resinous,floral,herbal,spicy,earthy]
-        ordered_radar = {k: radar_dict[k] for k in label_order}
-        radial_plot(
-            ordered_radar,
-            ax=ax,
-            annotate_center_val=np.mean(list(ordered_radar.values()))
-        )
+        fig = draw_radar(radar_dict)
         st.pyplot(fig, use_container_width=True)
 
     with col_text:
         st.markdown("### Top hop notes:")
-        for name, val in top2_notes:
-            st.write(f"• {name} ({val:.2f})")
+        for (note, val) in top2_notes:
+            st.write(f"• {note} ({val:.2f})")
 
         st.markdown("---")
         st.markdown("### Malt character:")
@@ -523,7 +483,6 @@ def main():
 
         st.markdown("---")
         st.markdown("### Hops used by the model:")
-        # show each hop & grams user used
         if len(agg_hops) == 0:
             st.write("(no hops added)")
         else:
@@ -535,11 +494,9 @@ def main():
         st.markdown("---")
         st.subheader("🧪 Debug: hop model input / prediction")
 
-        st.write("hop_model is None?", hop_aroma_model is None)
-
-        # Show guessed hop_feature_names
-        st.write("hop_feature_names:")
-        st.write(hop_feature_names[:200] if hop_feature_names else "(None)")
+        st.write("wrapper.model is None? ", hop_wrapper.model is None)
+        st.write("wrapper.feature_names:")
+        st.write(hop_wrapper.feature_names[:200] if hop_wrapper.feature_names else "(None)")
 
         if model_error:
             st.error(f"Model predict() error: {model_error}")
@@ -550,23 +507,20 @@ def main():
         st.write("User aggregate hop grams by hop variety:")
         st.dataframe(pd.DataFrame([agg_hops]), use_container_width=True)
 
-        st.write("type(hop_model):")
-        st.write(type(hop_aroma_model))
-        st.write(dir(hop_aroma_model)[:20])
+        st.write("type(wrapper.model):")
+        st.write(type(hop_wrapper.model))
+        if hop_wrapper.model is not None:
+            st.write(dir(hop_wrapper.model)[:20])
 
         st.markdown("---")
         st.subheader("🧬 Debug: yeast dataset")
         if clean_yeast_df is not None:
             st.write("Columns:")
             st.write(list(clean_yeast_df.columns))
-            # show partial table
             st.dataframe(clean_yeast_df.head(10), use_container_width=True)
         else:
             st.write("clean_yeast_df is None")
 
 
-# ------------------------------------------------------------
-# run
-# ------------------------------------------------------------
 if __name__ == "__main__":
     main()
