@@ -121,14 +121,21 @@ class HopModelWrapper:
 
 @st.cache_resource(show_spinner=False)
 def load_hop_model():
-    """
-    Load hop_aroma_model.joblib and wrap it.
-    """
     try:
-        raw_obj = joblib.load("hop_aroma_model.joblib")
-    except Exception:
-        raw_obj = None
-    return HopModelWrapper(raw_obj)
+        bundle = joblib.load("hop_aroma_model.joblib")
+
+        model = bundle["model"]            # RandomForestRegressor
+        feature_cols = bundle["feature_cols"]  # list of hop_XXX columns
+        aroma_dims = bundle["aroma_dims"]      # ['fruity','citrus',...,'resinous']
+
+        return {
+            "model": model,
+            "feature_cols": feature_cols,
+            "aroma_dims": aroma_dims,
+        }
+    except Exception as e:
+        st.error(f"Failed to load hop aroma model: {e}")
+        return None
 
 
 #########################
