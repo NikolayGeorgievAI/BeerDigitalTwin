@@ -33,11 +33,11 @@ STYLE_EMOJI = "🍻"
 
 class HopModelWrapper:
     """
-    Wraps whatever we loaded from hop_aroma_model.joblib.
+    Wraps the hop aroma model loaded from hop_aroma_model.joblib.
     Handles:
-      - .model  (the thing with .predict)
-      - .feature_names (list of expected features)
-      - .last_raw_pred (for debug)
+      - .model (the estimator/pipeline with .predict)
+      - .feature_names (expected input columns)
+      - .last_raw_pred (debug copy of the model's raw prediction output)
     """
 
     def __init__(self, raw_obj):
@@ -45,31 +45,34 @@ class HopModelWrapper:
         self.model = None
         self.feature_names = None
         self.error = None
-        self.last_raw_pred = None  # <-- debug hook
+        self.last_raw_pred = None  # debug
 
-        # pick out model object
+        # Try to locate the real model
         if hasattr(raw_obj, "predict"):
+            # raw_obj itself is the model
             self.model = raw_obj
         elif isinstance(raw_obj, dict):
+            # maybe it's a dict with "model" or something similar
             if "model" in raw_obj and hasattr(raw_obj["model"], "predict"):
                 self.model = raw_obj["model"]
             else:
+                # brute force: first value that has .predict
                 for v in raw_obj.values():
                     if hasattr(v, "predict"):
                         self.model = v
                         break
 
-        # figure out feature names
+        # Try to get feature names
         self.feature_names = self._extract_feature_names(raw_obj)
 
     def _extract_feature_names(self, raw_obj):
-        # direct estimator
+        # direct
         if hasattr(raw_obj, "feature_names_in_"):
             return list(raw_obj.feature_names_in_)
         if hasattr(raw_obj, "feature_names_in"):
             return list(raw_obj.feature_names_in)
 
-        # dict
+        # dict possibilities
         if isinstance(raw_obj, dict):
             if "feature_names" in raw_obj and isinstance(raw_obj["feature_names"], list):
                 return raw_obj["feature_names"]
@@ -86,9 +89,9 @@ class HopModelWrapper:
 
     def predict_scores(self, aligned_df: pd.DataFrame) -> Tuple[Dict[str, float], Optional[str]]:
         """
-        aligned_df should ALREADY match the model's expected columns.
-        Returns aroma_scores (all 8 axes) + error or None.
-        Also stores raw model output in self.last_raw_pred for debug.
+        aligned_df should match the model's expected columns (same order/labels).
+        We'll interpret predict() result as an array shaped (1, 8),
+        with indices mapped to AROMA_AXES in that order.
         """
         out_scores = {axis: 0.0 for axis in AROMA_AXES}
 
@@ -103,44 +106,27 @@ class HopModelWrapper:
         except Exception as e:
             return out_scores, f"Predict crashed: {e}"
 
-        # keep raw pred for debug
+        # Keep raw pred for debug
         self.last_raw_pred = pred
 
-        # interpret prediction
-        # case 1: model returns a list/array of dicts or vectors
-        first = None
-        if isinstance(pred, (list, np.ndarray, pd.Series)):
-            if len(pred) > 0:
-                first = pred[0]
-            else:
-                first = pred
-        else:
-            # single object/single dict/single array?
-            first = pred
-
-        # dict mapping axis->score?
-        if isinstance(first, dict):
-            for axis in AROMA_AXES:
-                out_scores[axis] = float(first.get(axis, 0.0))
-            return out_scores, None
-
-        # numeric vector same length as AROMA_AXES?
-        if hasattr(first, "__len__") and not isinstance(first, str):
-            try:
-                first_list = list(first)
-            except Exception:
-                first_list = None
-
-            if first_list is not None and len(first_list) == len(AROMA_AXES):
-                for axis, val in zip(AROMA_AXES, first_list):
+        # We expect something like [[f,c,t,e,s,h,fl,re]]
+        # shape (1,8). We'll map index->AROMA_AXES.
+        # If not that shape, we'll fall back to zeros + error message.
+        try:
+            arr = np.array(pred)
+            # arr should be 2D, (1,8)
+            if arr.ndim == 2 and arr.shape[1] == len(AROMA_AXES):
+                row = arr[0]
+                for axis, val in zip(AROMA_AXES, row):
                     out_scores[axis] = float(val)
                 return out_scores, None
-
-        # couldn't map
-        return out_scores, (
-            "Model returned unexpected output "
-            f"(type={type(first)} value={first})"
-        )
+            else:
+                return out_scores, (
+                    f"Unexpected pred shape: {arr.shape}, "
+                    "cannot map to aroma axes."
+                )
+        except Exception as e:
+            return out_scores, f"Could not interpret model output: {e}"
 
 
 def load_hop_model_wrapper(path: str = "hop_aroma_model.joblib") -> HopModelWrapper:
@@ -162,7 +148,7 @@ def load_clean_malt_df(path: str = "clean_malt_df.pkl") -> pd.DataFrame:
     try:
         return pd.read_pickle(path)
     except Exception:
-        # fallback/basic rows if pickle missing
+        # fallback
         return pd.DataFrame(
             {"MaltName": ["BEST ALE MALT", "BLACK MALT", "CARA GOLD MALT"]}
         )
@@ -180,9 +166,9 @@ def load_clean_yeast_df(path: str = "clean_yeast_df.pkl") -> pd.DataFrame:
                     "Edme Ale Yeast",
                     "Manchester",
                 ],
-                "fruity_esters": [1, 0, 0],
+                "fruity_esters": [1, 0, 1],
                 "phenolic_spicy": [0, 0, 0],
-                "clean_neutral": [0, 1, 1],
+                "clean_neutral": [0, 1, 0],
             }
         )
     return df
@@ -201,7 +187,7 @@ def unique_sorted(series_like) -> List[str]:
 
 def parse_feature_bin(bin_label: str) -> Tuple[Optional[float], Optional[float]]:
     """
-    Convert something like "0 - 100" -> (0.0, 100.0).
+    Convert strings like '0 - 100' → (0.0, 100.0).
     Return (None, None) if it doesn't parse.
     """
     txt = bin_label.replace("–", "-").replace("—", "-")
@@ -216,54 +202,89 @@ def parse_feature_bin(bin_label: str) -> Tuple[Optional[float], Optional[float]]
         return (None, None)
 
 
-def build_hop_vector_binned(user_hops: List[Dict[str, float]], feature_names: List[str]) -> Tuple[pd.DataFrame, float, Dict[str, float]]:
+def feature_names_look_like_bins(feat_list: List[str]) -> bool:
     """
-    1) Sum total hop mass.
-    2) For each feature bin "X - Y", set 1.0 if total mass is in [X,Y], else 0.0.
-    Returns:
-      aligned_df (1 row),
-      total_hop_mass,
-      bin_hits {bin_label:1.0/0.0,...} for debug.
+    True if EVERY feature name parses as "lo - hi" numeric ranges.
     """
+    if not feat_list:
+        return False
+    good = 0
+    for f in feat_list:
+        lo, hi = parse_feature_bin(f)
+        if lo is not None and hi is not None:
+            good += 1
+    return good == len(feat_list)
+
+
+def build_aligned_df_for_model(
+    user_hops: List[Dict[str, float]],
+    model_feature_names: Optional[List[str]]
+) -> Tuple[pd.DataFrame, float, Dict[str, float], Dict[str, float]]:
+    """
+    This function is now THE source of truth for model input.
+
+    Steps:
+    1. Compute total hop mass.
+    2. If model_feature_names look like bins ("0 - 100", etc):
+         build a single-row dataframe with those bin columns.
+         1 if total mass in that bin range, else 0.
+       Else:
+         build sparse hop columns "hop_<variety>".
+         align them to model_feature_names if provided.
+    3. Return:
+       - aligned_df
+       - total_hop_mass
+       - bin_hits_debug (bin -> 1/0)
+       - sparse_debug  (hop_name -> grams)
+    """
+
     total_hop_mass = sum(float(h["amt"] or 0.0) for h in user_hops)
 
-    row_dict = {}
-    bin_hits = {}
-    for feat in feature_names:
-        lo, hi = parse_feature_bin(feat)
-        if lo is None or hi is None:
-            row_dict[feat] = 0.0
-            bin_hits[feat] = 0.0
-            continue
-        in_range = 1.0 if (lo <= total_hop_mass <= hi) else 0.0
-        row_dict[feat] = in_range
-        bin_hits[feat] = in_range
+    bin_hits_debug = {}
+    sparse_debug = {}
 
-    df = pd.DataFrame([row_dict], index=[0])
-    return df, total_hop_mass, bin_hits
+    if model_feature_names and feature_names_look_like_bins(model_feature_names):
+        # BIN MODE
+        row_dict = {}
+        for feat in model_feature_names:
+            lo, hi = parse_feature_bin(feat)
+            if lo is None or hi is None:
+                row_dict[feat] = 0.0
+                bin_hits_debug[feat] = 0.0
+            else:
+                in_range = 1.0 if (lo <= total_hop_mass <= hi) else 0.0
+                row_dict[feat] = in_range
+                bin_hits_debug[feat] = in_range
 
+        aligned_df = pd.DataFrame([row_dict], index=[0])
 
-def build_hop_vector_sparse(user_hops: List[Dict[str, float]], feature_names: List[str]) -> Tuple[pd.DataFrame, Dict[str, float]]:
-    """
-    (fallback if the model wants columns like 'hop_Adeena', etc.)
-    We'll aggregate grams per hop name and align to feature_names.
-    Returns df + aggregate dict for debug.
-    """
-    aggregate = {}
-    for entry in user_hops:
-        hop_name = entry.get("name", "-")
-        amt_g = float(entry.get("amt", 0.0) or 0.0)
-        if hop_name == "-" or amt_g <= 0:
-            continue
-        col_name = f"hop_{hop_name}"
-        aggregate[col_name] = aggregate.get(col_name, 0.0) + amt_g
+    else:
+        # SPARSE MODE
+        # aggregate grams by hop name
+        aggregate = {}
+        for entry in user_hops:
+            hop_name = entry.get("name", "-")
+            amt_g = float(entry.get("amt", 0.0) or 0.0)
+            if hop_name == "-" or amt_g <= 0:
+                continue
+            col_name = f"hop_{hop_name}"
+            aggregate[col_name] = aggregate.get(col_name, 0.0) + amt_g
 
-    aligned_row = {}
-    for feat in feature_names:
-        aligned_row[feat] = float(aggregate.get(feat, 0.0))
-    df = pd.DataFrame([aligned_row], index=[0])
+        sparse_debug = aggregate.copy()
 
-    return df, aggregate
+        # align to model_feature_names if provided,
+        # otherwise just build df from aggregate
+        if model_feature_names:
+            row_dict = {}
+            for feat in model_feature_names:
+                row_dict[feat] = float(aggregate.get(feat, 0.0))
+        else:
+            row_dict = aggregate
+
+        # ensure we always return 1 row
+        aligned_df = pd.DataFrame([row_dict], index=[0])
+
+    return aligned_df, total_hop_mass, bin_hits_debug, sparse_debug
 
 
 def infer_style_direction(yeast_row: pd.Series) -> str:
@@ -290,15 +311,13 @@ def infer_top_notes(aroma_scores: Dict[str, float], top_n: int = 2) -> List[Tupl
 def sidebar_inputs(malt_df: pd.DataFrame, yeast_df: pd.DataFrame) -> Tuple[List[Dict], List[Dict], str, bool]:
     st.sidebar.header("Hop Bill (g)")
 
-    manual_hops = [
-        "-", "Adeena", "Admiral", "Amarillo", "Astra", "Citra", "Mosaic", "Simcoe"
-    ]
-    hop_options = ["-"] + sorted(set(manual_hops), key=lambda x: x.lower())
+    # You can expand this list with all your hops
+    hop_options = ["-", "Adeena", "Admiral", "Amarillo", "Astra", "Citra", "Mosaic", "Simcoe"]
 
     user_hops = []
     for i in range(1, 5):
         st.sidebar.subheader(f"Hop {i}")
-        hname = st.sidebar.selectbox(f"Hop {i} name", hop_options, key=f"hop{i}_name")
+        hname = st.sidebar.selectbox(f"Hop {i} name", sorted(hop_options, key=lambda x: x.lower()), key=f"hop{i}_name")
         hgrams = st.sidebar.number_input(
             f"(g) for Hop {i}",
             min_value=0.0,
@@ -312,7 +331,7 @@ def sidebar_inputs(malt_df: pd.DataFrame, yeast_df: pd.DataFrame) -> Tuple[List[
     st.sidebar.markdown("---")
     st.sidebar.header("Malt Bill (%)")
 
-    # figure out which column in malt_df to use
+    # guess malt name col
     malt_col_guess = None
     for cand in ["MaltName", "malt_name", "Malt", "Name"]:
         if cand in malt_df.columns:
@@ -367,14 +386,13 @@ def make_radar(aroma_scores: Dict[str, float]) -> plt.Figure:
     fig, ax = plt.subplots(subplot_kw=dict(polar=True), figsize=(6, 6))
 
     vals_loop = vals + [vals[0]]
-    angles_loop = list(angles) + [angles[0]]
+    ang_loop = list(angles) + [angles[0]]
 
-    ax.plot(angles_loop, vals_loop, color="#1f2a44", linewidth=2)
-    ax.fill(angles_loop, vals_loop, color="#1f2a44", alpha=0.25)
+    ax.plot(ang_loop, vals_loop, color="#1f2a44", linewidth=2)
+    ax.fill(ang_loop, vals_loop, color="#1f2a44", alpha=0.25)
 
-    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
     ax.set_ylim(0.0, 1.0)
-
+    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
     ax.set_xticks(angles)
     ax.set_xticklabels(AROMA_AXES, fontsize=12)
 
@@ -398,20 +416,6 @@ def make_radar(aroma_scores: Dict[str, float]) -> plt.Figure:
 # 6. MAIN
 # ----------------------------
 
-def looks_like_bins(feat_list: List[str]) -> bool:
-    """
-    True if every feature name parses as "lo - hi".
-    """
-    if not feat_list:
-        return False
-    ok = 0
-    for f in feat_list:
-        lo, hi = parse_feature_bin(f)
-        if lo is not None and hi is not None:
-            ok += 1
-    return ok == len(feat_list)
-
-
 def main():
     st.set_page_config(
         page_title="Beer Recipe Digital Twin",
@@ -424,69 +428,35 @@ def main():
         "Predict hop aroma, malt character, and fermentation profile using trained ML models (work in progress)."
     )
 
-    # load data/model
+    # Load data/model
     malt_df = load_clean_malt_df()
     yeast_df = load_clean_yeast_df()
     hop_wrapper = load_hop_model_wrapper()
 
-    # inputs
+    # Sidebar inputs from user
     user_hops, user_malts, yeast_choice, run_clicked = sidebar_inputs(malt_df, yeast_df)
 
-    # yeast row
+    # Pick yeast row or fallback
     yeast_row = yeast_df[yeast_df["Name"] == yeast_choice]
     if yeast_row.empty:
         yeast_row = yeast_df.iloc[[0]].copy()
     yeast_row = yeast_row.iloc[0]
 
-    # ----------------
-    # Build aligned_df for the model
-    # ----------------
-    aligned_df = pd.DataFrame()
-    total_hop_mass = sum(float(h["amt"] or 0.0) for h in user_hops)
-    bin_hits_debug = {}
-    sparse_debug = {}
+    # Build the aligned_df for the hop model
+    aligned_df, total_hop_mass, bin_hits_debug, sparse_debug = build_aligned_df_for_model(
+        user_hops,
+        hop_wrapper.feature_names,
+    )
 
-    if hop_wrapper.feature_names and looks_like_bins(hop_wrapper.feature_names):
-        # Binned mode
-        aligned_df, total_hop_mass, bin_hits_debug = build_hop_vector_binned(
-            user_hops, hop_wrapper.feature_names
-        )
-    elif hop_wrapper.feature_names:
-        # Sparse per-hop mode
-        aligned_df, sparse_debug = build_hop_vector_sparse(
-            user_hops, hop_wrapper.feature_names
-        )
-    else:
-        # No feature names: still build sparse dict from user hops
-        # and just pass that raw (this is last-resort)
-        agg = {}
-        for entry in user_hops:
-            hop_name = entry.get("name", "-")
-            amt_g = float(entry.get("amt", 0.0) or 0.0)
-            if hop_name == "-" or amt_g <= 0:
-                continue
-            col_name = f"hop_{hop_name}"
-            agg[col_name] = agg.get(col_name, 0.0) + amt_g
-        if agg:
-            aligned_df = pd.DataFrame([agg], index=[0])
-        else:
-            # ensure at least 1 row so .predict doesn't immediately explode
-            aligned_df = pd.DataFrame([{}], index=[0])
-
-    # ----------------
-    # Predict
-    # ----------------
+    # Predict aroma
     aroma_scores = DEFAULT_AROMA_SCORES.copy()
     model_error = None
     raw_pred_for_debug = None
-
     if run_clicked:
         aroma_scores, model_error = hop_wrapper.predict_scores(aligned_df)
         raw_pred_for_debug = hop_wrapper.last_raw_pred
 
-    # ----------------
     # Layout columns
-    # ----------------
     col_chart, col_meta = st.columns([1.1, 1])
 
     with col_chart:
@@ -531,9 +501,7 @@ def main():
                 used_hops_str.append(f"{hop['name']} ({hop['amt']:.0f}g)")
         st.write(", ".join(used_hops_str) if used_hops_str else "—")
 
-    # ----------------
-    # Debug info
-    # ----------------
+    # Debug panel
     st.markdown("---")
     st.subheader("🔬 Debug info")
 
@@ -565,11 +533,9 @@ def main():
     if raw_pred_for_debug is not None:
         st.write("Raw model prediction output:")
         try:
-            # if it's array-like, convert to list so Streamlit can show it
-            if isinstance(raw_pred_for_debug, (np.ndarray, pd.Series)):
-                st.json(raw_pred_for_debug.tolist())
-            else:
-                st.json(raw_pred_for_debug)
+            arr = np.array(raw_pred_for_debug)
+            st.write("raw_pred shape:", arr.shape)
+            st.write(arr.tolist())
         except Exception:
             st.write(raw_pred_for_debug)
 
