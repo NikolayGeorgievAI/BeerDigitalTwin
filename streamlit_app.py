@@ -226,58 +226,117 @@ def predict_hop_aroma(wrapper, aligned_df):
 # PLOTTING: RADAR
 # -------------------------
 
-def make_radar(ax, values_dict):
+# aroma_scores is what you got back from predict_hop_aroma(...)
+# It might be None or empty the first time (before user clicks Predict)
+
+if not aroma_scores:
+    # make a placeholder dict of zeros with all 8 flavor axes
+    aroma_scores = {
+        "fruity": 0.0,
+        "citrus": 0.0,
+        "tropical": 0.0,
+        "earthy": 0.0,
+        "spicy": 0.0,
+        "herbal": 0.0,
+        "floral": 0.0,
+        "resinous": 0.0,
+    }
+
+fig = plt.figure(figsize=(6,6), dpi=150)
+ax = plt.subplot(111, polar=True)
+make_radar(ax, aroma_scores)
+st.pyplot(fig, use_container_width=True)
+plt.close(fig)
+
+def make_radar(ax, aroma_scores):
     """
-    Draw spider/radar plot of aroma axes.
-    values_dict: {"fruity":0.1,"citrus":0.2,...} length = 8
+    Draws a radar / spider plot of hop aroma.
+
+    aroma_scores should be either:
+      - a dict like {"fruity":0.1, "citrus":0.2, ...} with exactly the 8 categories
+      - or a list/array of length 8 in the fixed order below.
+
+    If it's missing or wrong length, we just plot zeros to avoid crashing.
     """
+    categories = [
+        "fruity",
+        "citrus",
+        "tropical",
+        "earthy",
+        "spicy",
+        "herbal",
+        "floral",
+        "resinous",
+    ]
 
-    labels = list(values_dict.keys())
-    vals = list(values_dict.values())
+    num_vars = len(categories)
 
-    # close the loop
-    labels += [labels[0]]
-    vals   += [vals[0]]
+    # 1) normalize aroma_scores to a list of length num_vars
+    if aroma_scores is None:
+        vals = [0.0] * num_vars
+    elif isinstance(aroma_scores, dict):
+        vals = [float(aroma_scores.get(cat, 0.0)) for cat in categories]
+    else:
+        # assume it's list-like
+        vals = list(aroma_scores)
+        # pad or trim to num_vars
+        if len(vals) < num_vars:
+            vals = vals + [0.0] * (num_vars - len(vals))
+        elif len(vals) > num_vars:
+            vals = vals[:num_vars]
 
-    # angles
-    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist()
-    # ensure we close
-    angles += [angles[0]]
+    # 2) close the loop for plotting
+    vals_closed = vals + [vals[0]]
 
-    # Draw
-    ax.set_theta_offset(np.pi / 2.0)
+    # 3) angles for each axis (also closed)
+    angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+    angles_closed = angles + [angles[0]]
+
+    # 4) clear the axis each time we draw
+    ax.clear()
+
+    # Set up polar
+    ax.set_theta_offset(np.pi / 2)
     ax.set_theta_direction(-1)
 
-    ax.set_rlabel_position(180/len(labels))  # put radial labels nicely
+    # Draw outline/grid
+    ax.set_rlabel_position(0)
+    ax.set_ylim(0, 1.0)  # assume model outputs 0-1-ish
+    ax.set_xticks(angles)
+    ax.set_xticklabels(categories)
 
-    # grid / style
-    ax.set_facecolor("white")
-    ax.spines["polar"].set_color("#333333")
-    ax.grid(color="#999999", linestyle="--", linewidth=1, alpha=0.6)
+    # Light dashed grid
+    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+    ax.set_yticklabels(["0.2", "0.4", "0.6", "0.8", "1.0"])
 
-    # Plot outline
-    ax.plot(angles, vals, color="#1f2a44", linewidth=2)
-    ax.fill(angles, vals, color="#1f2a44", alpha=0.2)
+    # 5) Plot fill
+    ax.plot(angles_closed, vals_closed, color="#1f2a44", linewidth=2)
+    ax.fill(angles_closed, vals_closed, color="#1f2a44", alpha=0.25)
 
-    # Ticks
-    ax.set_yticks([0.2,0.4,0.6,0.8,1.0])
-    ax.set_yticklabels(["0.2","0.4","0.6","0.8","1.0"], color="#333333")
-    ax.set_ylim(0,1.0)
-
-    # Axes labels
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(labels[:-1], color="#333333", fontsize=12)
-
-    # center label
-    center_val = np.mean(vals[:-1]) if len(vals) > 1 else 0.0
+    # 6) put a numeric label bubble in the middle (avg intensity just as a quick read)
+    avg_val = float(np.mean(vals)) if len(vals) else 0.0
     ax.text(
-        0.5, 0.5,
-        f"{center_val:0.2f}",
+        0.5,
+        0.5,
+        f"{avg_val:.2f}",
         transform=ax.transAxes,
-        ha="center", va="center",
-        fontsize=20,
-        bbox=dict(boxstyle="round,pad=0.4", fc="#E8ECF7", ec="#1f2a44", lw=2)
+        ha="center",
+        va="center",
+        fontsize=18,
+        fontweight="bold",
+        bbox=dict(
+            boxstyle="round,pad=0.4",
+            fc="#e9edf8",
+            ec="#1f2a44",
+            lw=2,
+        ),
     )
+
+    # cosmetic
+    ax.grid(color="#999999", linestyle="--", linewidth=0.8, alpha=0.6)
+    for spine in ax.spines.values():
+        spine.set_color("#1f2a44")
+        spine.set_linewidth(2)
 
 
 # -------------------------
