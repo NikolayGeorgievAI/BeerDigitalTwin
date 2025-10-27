@@ -298,6 +298,11 @@ def plot_radar(profile_dict, title="Profile"):
 
     radial_max = max(vals) if max(vals) > 0 else 1.0
     ax.set_ylim(0, radial_max)
+    ax.set_yticklabels([])  # <<< hides the radial numbers
+    ax.yaxis.grid(False)    # <<< hides radial gridlines (optional)
+
+    ax.spines['polar'].set_visible(False)
+    ax.grid(color="gray", alpha=0.2)
 
     plt.tight_layout()
     return fig
@@ -349,10 +354,14 @@ Keep bullet points tight, <200 words total.
         temperature=0.5,
     )
 
-    ai_text = completion.choices[0].message["content"]
+    ai_text = getattr(completion.choices[0].message, "content", "")
+if not ai_text and hasattr(completion.choices[0], "message"):
+    msg = completion.choices[0].message
+    if isinstance(msg, dict) and "content" in msg:
+        ai_text = msg["content"]
+if not ai_text:
+    ai_text = str(completion)  # fallback debug
 
-    answer_md = "### 🧪 AI Brewmaster Guidance\n\n" + ai_text.strip()
-    return answer_md
 
 
 # ======================================================
