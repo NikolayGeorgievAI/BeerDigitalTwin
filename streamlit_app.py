@@ -96,10 +96,10 @@ malt_dims = malt_bundle["flavor_cols"]                # output flavor/body/color
 # --- Yeast model bundle ---
 # Keys: "model", "feature_cols", "flavor_cols"
 YEAST_MODEL_PATH = os.path.join(ROOT_DIR, "yeast_sensory_model.joblib")
-yeast_bundle = joblib.load(YEast_MODEL_PATH)  # <-- typo fixed below!
+yeast_bundle = joblib.load(YEAST_MODEL_PATH)
 yeast_model = yeast_bundle["model"]
-yeast_feature_cols = yeast_bundle["feature_cols"]      # e.g. ['yeast_London Ale III', 'yeast_US05', ...]
-yeast_dims = yeast_bundle["flavor_cols"]              # output esters/haze/attenuation/etc.
+yeast_feature_cols = yeast_bundle["feature_cols"]
+yeast_dims = yeast_bundle["flavor_cols"]
 
 # NOTE: there's a typo above: YEast_MODEL_PATH vs YEAST_MODEL_PATH.
 # I'm fixing it right here so you can paste cleanly:
