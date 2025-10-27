@@ -1,5 +1,5 @@
 #########################
-# Beer Recipe Digital Twin (radar fix + bin parsing)
+# Beer Recipe Digital Twin (radar fix + bin-mode fix)
 #########################
 
 import streamlit as st
@@ -32,7 +32,6 @@ st.set_page_config(
 def load_reference_data():
     """
     Load reference data used to populate dropdowns and metadata.
-    Update the filenames if yours differ.
     """
     try:
         yeast_df = pd.read_pickle("clean_yeast_df.pkl")
@@ -56,12 +55,13 @@ def load_reference_data():
 
 class HopModelWrapper:
     """
-    Unifies access to your hop aroma model, which might be:
-      - a Pipeline with .predict(...) and maybe .feature_names_in_
-      - or a dict { "model": <pipeline>, "feature_names": [...] }
+    Unifies access to hop aroma model:
+      - raw joblib might be a Pipeline
+      - or a dict{"model": pipeline, "feature_names": [...]}
+
     After init:
       self.model          -> object with .predict(...)
-      self.feature_names  -> list of expected feature columns (or None)
+      self.feature_names  -> list[str] or None
     """
 
     def __init__(self, raw_obj):
@@ -71,12 +71,12 @@ class HopModelWrapper:
         if raw_obj is None:
             return
 
-        # Case 1: raw_obj itself looks like a model
+        # Case 1: raw_obj is already a model
         if hasattr(raw_obj, "predict"):
             self.model = raw_obj
             fn = getattr(raw_obj, "feature_names_in_", None)
             if fn is not None:
-                self.feature_names = list(fn)
+                self.feature_names = [str(x) for x in list(fn)]
             else:
                 self.feature_names = None
 
@@ -89,12 +89,12 @@ class HopModelWrapper:
                 self.model = mdl
 
             if feat is not None:
-                self.feature_names = list(feat)
+                # force python strings
+                self.feature_names = [str(x) for x in list(feat)]
             else:
-                # try nested model's feature_names_in_
                 fn = getattr(mdl, "feature_names_in_", None)
                 if fn is not None:
-                    self.feature_names = list(fn)
+                    self.feature_names = [str(x) for x in list(fn)]
                 else:
                     self.feature_names = None
 
@@ -105,8 +105,7 @@ class HopModelWrapper:
 @st.cache_resource(show_spinner=False)
 def load_hop_model():
     """
-    Load hop_aroma_model.joblib and wrap it. If it can't load, we still
-    return a wrapper (but wrapper.is_ready() will be False).
+    Load hop_aroma_model.joblib and wrap it.
     """
     try:
         raw_obj = joblib.load("hop_aroma_model.joblib")
@@ -121,7 +120,7 @@ def load_hop_model():
 
 def parse_feature_bin(bin_label: str) -> Tuple[Optional[float], Optional[float]]:
     """
-    Convert "[0 - 100]"  or  "0 - 100"  →  (0.0, 100.0).
+    Convert strings like "[0 - 100]" or "0 - 100" into (0.0, 100.0).
     Return (None, None) if parse fails.
     """
     if bin_label is None:
@@ -150,17 +149,29 @@ def parse_feature_bin(bin_label: str) -> Tuple[Optional[float], Optional[float]]
 
 def feature_names_look_like_bins(feat_list: List[str]) -> bool:
     """
-    Return True if *every* string in feat_list parses to a numeric (lo, hi).
+    True if (a) feat_list not empty,
+         (b) every item parses to (lo,hi),
+         (c) usually small (~4 ranges).
     """
     if not feat_list:
         return False
 
-    good = 0
+    parsed_ok = 0
     for f in feat_list:
         lo, hi = parse_feature_bin(f)
         if lo is not None and hi is not None:
-            good += 1
-    return good == len(feat_list)
+            parsed_ok += 1
+
+    # all must parse
+    if parsed_ok != len(feat_list):
+        return False
+
+    # heuristic: if there are only a handful of bins (like 4),
+    # it's almost certainly "bin mode".
+    if len(feat_list) <= 10:
+        return True
+
+    return True
 
 
 def build_aligned_df_for_model(
@@ -168,31 +179,35 @@ def build_aligned_df_for_model(
     model_feature_names: Optional[List[str]]
 ) -> Tuple[pd.DataFrame, float, Dict[str, float], Dict[str, float]]:
     """
-    Build a single-row DataFrame for the hop model .predict() call.
+    Build the single-row DataFrame for .predict().
 
-    We support 2 modes:
+    BIN MODE:
+      - model_feature_names look like numeric ranges
+      - we compute total hop mass
+      - mark exactly one bin with 1.0 (others 0.0)
 
-    1) BIN MODE
-       feature_names like "[0 - 100]", "[100 - 200]", etc.
-       We compute total hop mass, find which bin it lands in,
-       set that bin column=1.0 (others=0).
+    SPARSE MODE:
+      - columns look like hop_Adeena, hop_Amarillo, etc.
+      - sum grams of each selected hop into those columns
 
-    2) SPARSE MODE
-       feature_names look like "hop_Adeena", "hop_Amarillo", etc.
-       We sum grams for each hop variety into matching columns.
-
-    Returns:
-      aligned_df            (1-row DataFrame ready for .predict)
-      total_hop_mass        (float)
-      bin_hits_debug        (dict) which bin got hit in bin-mode
-      sparse_debug          (dict) grams per hop_... in sparse-mode
+    Returns
+    -------
+    aligned_df : pd.DataFrame
+    total_mass : float
+    bin_hits_debug : dict   (which bin got hit in bin mode)
+    sparse_debug : dict     (grams per hop_... in sparse mode)
     """
+
     total_hop_mass = sum(float(h.get("amt", 0.0) or 0.0) for h in user_hops)
     bin_hits_debug = {}
     sparse_debug = {}
 
-    # BIN MODE?
-    if model_feature_names and feature_names_look_like_bins(model_feature_names):
+    is_bin_mode = False
+    if model_feature_names:
+        is_bin_mode = feature_names_look_like_bins(model_feature_names)
+
+    if is_bin_mode:
+        # Pure bin mode. Ignore per-hop breakdown.
         row_dict = {}
         for feat in model_feature_names:
             lo, hi = parse_feature_bin(feat)
@@ -207,7 +222,7 @@ def build_aligned_df_for_model(
         aligned_df = pd.DataFrame([row_dict], index=[0])
 
     else:
-        # SPARSE MODE
+        # Sparse mode by hop name -> grams
         aggregate = {}
         for entry in user_hops:
             hop_name = entry.get("name", "-")
@@ -224,12 +239,8 @@ def build_aligned_df_for_model(
             for feat in model_feature_names:
                 row_dict[feat] = float(aggregate.get(feat, 0.0))
         else:
-            # fallback: just the aggregate
-            row_dict = aggregate
-
-        # even if empty, create a valid row
-        if not row_dict:
-            row_dict = {"_dummy": 0.0}
+            # fallback if model has no declared feature names
+            row_dict = aggregate if aggregate else {"_dummy": 0.0}
 
         aligned_df = pd.DataFrame([row_dict], index=[0])
 
@@ -258,7 +269,7 @@ def predict_hop_aroma(
     """
     Run hop_wrapper.model.predict(aligned_df).
     Return (aroma_scores_dict, raw_pred_array).
-    If model isn't ready or we error, return zeros.
+    If model isn't ready or errors, return zeros.
     """
     aroma_scores = {a: 0.0 for a in AROMA_COLUMNS}
     raw_pred = np.zeros((1, len(AROMA_COLUMNS)), dtype=float)
@@ -271,48 +282,37 @@ def predict_hop_aroma(
 
     try:
         pred = hop_wrapper.model.predict(aligned_df)
+        # Ensure ndarray shape (1, N)
         if isinstance(pred, (list, tuple)):
             pred = np.array(pred)
-
         if pred.ndim == 1:
             pred = pred.reshape(1, -1)
 
         raw_pred = pred
 
-        # Map columns -> dict
         for i, aroma in enumerate(AROMA_COLUMNS):
             if i < pred.shape[1]:
                 aroma_scores[aroma] = float(pred[0, i])
 
     except Exception:
-        pass  # leave zeros
+        pass
 
     return aroma_scores, raw_pred
 
 
 #########################
-# --- RADAR CHART (FIXED)
+# --- RADAR CHART
 #########################
 
 def make_radar(aroma_scores: Dict[str, float]):
     """
-    Create a radar/spider chart figure from aroma_scores in AROMA_COLUMNS order.
-    We ensure x and y arrays are the same length.
-
-    We'll:
-      - gather scores in [fruity, citrus, ... resinous]
-      - append the first score to close the loop
-      - build matching angles
-      - plot
+    Radar chart using AROMA_COLUMNS in fixed order.
     """
 
     vals = [aroma_scores[a] for a in AROMA_COLUMNS]
     n = len(vals)
 
-    # Close the loop by appending first value
     closed_vals = vals + vals[:1]
-
-    # Angles: n positions from 0..2pi, then repeat first angle
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
     closed_angles = np.concatenate([angles, [angles[0]]])
 
@@ -321,7 +321,7 @@ def make_radar(aroma_scores: Dict[str, float]):
         subplot_kw=dict(polar=True)
     )
 
-    # Plot outline
+    # outline
     ax.plot(
         closed_angles,
         closed_vals,
@@ -335,23 +335,15 @@ def make_radar(aroma_scores: Dict[str, float]):
         alpha=0.2
     )
 
-    # Put category labels around the circle
     ax.set_xticks(angles)
     ax.set_xticklabels(AROMA_COLUMNS, fontsize=12)
 
-    # Tidy radial grid
     ax.set_yticklabels([])
     ax.grid(color="gray", linestyle="--", linewidth=0.8, alpha=0.7)
     ax.spines["polar"].set_color("#222")
     ax.spines["polar"].set_linewidth(1.5)
 
-    # Put an "average" box roughly in the center
-    if n > 0:
-        avg_val = float(np.mean(vals))
-    else:
-        avg_val = 0.0
-
-    # We'll place this text at angle 0 (to the right) at radius 0, so it's in middle.
+    avg_val = float(np.mean(vals)) if n > 0 else 0.0
     ax.text(
         0.0,
         0.0,
@@ -371,24 +363,16 @@ def make_radar(aroma_scores: Dict[str, float]):
 
 
 #########################
-# --- STYLE/CHARACTER TEXT (PLACEHOLDER RULES)
+# --- STYLE/CHARACTER HEURISTICS
 #########################
 
-def summarize_top_hop_notes(aroma_scores: Dict[str,float], top_n:int=2) -> List[Tuple[str,float]]:
-    """
-    Return the top N aroma dimensions by score.
-    """
+def summarize_top_hop_notes(aroma_scores: Dict[str,float], top_n:int=2):
     pairs = [(k,v) for k,v in aroma_scores.items()]
     pairs.sort(key=lambda x: x[1], reverse=True)
     return pairs[:top_n]
 
 
 def guess_malt_character(malt_entries: List[Dict[str,float]]) -> str:
-    """
-    Toy rule: if any BLACK -> 'roasty / dark malt'
-    if any CARA... -> 'sweet_caramel'
-    else 'bready'
-    """
     chosen = [m["name"].upper() for m in malt_entries if m.get("name","-") != "-"]
 
     if any("BLACK" in x for x in chosen):
@@ -399,9 +383,6 @@ def guess_malt_character(malt_entries: List[Dict[str,float]]) -> str:
 
 
 def guess_yeast_character(yeast_name: str, yeast_df: pd.DataFrame) -> str:
-    """
-    Heuristic from yeast_df flags.
-    """
     if not yeast_name or yeast_name.strip() == "-":
         return "clean / neutral"
 
@@ -417,17 +398,10 @@ def guess_yeast_character(yeast_name: str, yeast_df: pd.DataFrame) -> str:
     if "phenolic_spicy" in row.columns and row["phenolic_spicy"].iloc[0] == 1:
         descs.append("phenolic_spicy")
 
-    if not descs:
-        return "clean / neutral"
-
-    return ", ".join(descs)
+    return ", ".join(descs) if descs else "clean / neutral"
 
 
 def guess_style_direction(aroma_scores: Dict[str,float], yeast_desc: str) -> str:
-    """
-    Toy rule: fruity + fruity yeast => Fruit-forward Ale
-    else Experimental / Hybrid
-    """
     fruity_val = aroma_scores.get("fruity", 0.0)
     if fruity_val > 0.3 and "fruity" in yeast_desc:
         return "🍑 Fruit-forward Ale"
@@ -439,16 +413,9 @@ def guess_style_direction(aroma_scores: Dict[str,float], yeast_desc: str) -> str
 #########################
 
 def sidebar_inputs(yeast_df: pd.DataFrame, malt_df: pd.DataFrame):
-    """
-    Create sidebar UI for up to 4 hops (name+grams),
-    up to 3 malts (name+pct),
-    and a yeast choice.
-    """
-
     st.sidebar.header("Model Inputs")
     st.sidebar.markdown("### Hop Bill (g)")
 
-    # TODO: replace with your real hop list (we saw Adeena, Amarillo, etc.)
     hop_options = ["-", "Adeena", "Admiral", "Amarillo", "Citra", "Simcoe", "Galaxy"]
 
     hop_entries = []
@@ -487,7 +454,6 @@ def sidebar_inputs(yeast_df: pd.DataFrame, malt_df: pd.DataFrame):
             index=0,
             key=f"malt{i}_name"
         )
-        # simple default: first 2 malts default 50/50, 3rd default 0
         default_pct = 50.0 if i <= 2 else 0.0
         malt_pct = st.sidebar.number_input(
             f"Malt {i} %",
@@ -520,7 +486,7 @@ def sidebar_inputs(yeast_df: pd.DataFrame, malt_df: pd.DataFrame):
 
 
 #########################
-# --- MAIN APP LAYOUT
+# --- MAIN APP
 #########################
 
 def main():
@@ -532,28 +498,22 @@ def main():
     yeast_df, malt_df = load_reference_data()
     hop_wrapper = load_hop_model()
 
-    # 1. Inputs
     hop_entries, malt_entries, yeast_choice, run_button = sidebar_inputs(yeast_df, malt_df)
 
-    # 2. Build aligned_df for the hop model
     aligned_df, total_hop_mass, bin_debug, sparse_debug = build_aligned_df_for_model(
         hop_entries,
         hop_wrapper.feature_names
     )
 
-    # 3. Predict aroma
     aroma_scores, raw_pred = predict_hop_aroma(hop_wrapper, aligned_df)
 
-    # 4. Radar chart figure (fixed version)
     fig = make_radar(aroma_scores)
 
-    # 5. Side descriptors
     top_notes = summarize_top_hop_notes(aroma_scores, top_n=2)
     malt_desc = guess_malt_character(malt_entries)
     yeast_desc = guess_yeast_character(yeast_choice, yeast_df)
     style_dir  = guess_style_direction(aroma_scores, yeast_desc)
 
-    # 6. Layout: radar left, descriptors right
     left_col, right_col = st.columns([2.2, 1])
 
     with left_col:
@@ -584,12 +544,9 @@ def main():
             for h in hop_entries
             if h["name"] != "-" and h["amt"] > 0
         ]
-        if used_hops:
-            st.write(", ".join(used_hops))
-        else:
-            st.write("—")
+        st.write(", ".join(used_hops) if used_hops else "—")
 
-    # 7. Debug info
+    # Debug block
     st.markdown("---")
     st.markdown("### 🔬 Debug info")
 
