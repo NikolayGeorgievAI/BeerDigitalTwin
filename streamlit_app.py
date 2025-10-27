@@ -25,8 +25,9 @@ def _clean_name(name: str) -> str:
 
 def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
     """
-    Given e.g. "Citra", find best model column like "hop_Citra®".
-    Only consider columns that start with that prefix.
+    Given e.g. "Citra", find best feature col like "hop_Citra®".
+    Only consider cols that start with that prefix.
+    Returns the matching column name or None.
     """
     cleaned_user = _clean_name(user_name)
     best_match = None
@@ -36,10 +37,10 @@ def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
         if not col.startswith(prefix):
             continue
 
-        raw_label = col[len(prefix):]  # e.g. 'Citra®'
+        raw_label = col[len(prefix):]  # e.g. remove 'hop_' or 'malt_'
         cleaned_label = _clean_name(raw_label)
 
-        # quick gate
+        # quick gate: first 3 chars must appear somewhere
         if len(cleaned_user) >= 3 and cleaned_user[:3] not in cleaned_label:
             continue
 
@@ -55,16 +56,14 @@ def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
 
 def _choices_from_features(feature_cols, preferred_prefix=None):
     """
-    Generate nice human-readable dropdown options from model feature columns.
+    Build human-friendly dropdown names from model feature columns.
 
-    - If preferred_prefix is provided (e.g. 'malt_', 'yeast_'), we FIRST try to
-      include only columns starting with that prefix.
-    - If that yields nothing, we fall back to using all columns.
+    If preferred_prefix is provided (like 'malt_', 'yeast_'), we FIRST try to
+    include only columns that start with that prefix. If that gives nothing,
+    we fall back to all cols.
 
-    We also clean/truncate prefixes like 'malt_', 'grain_', 'yeast_', etc.,
-    remove ™/®, and replace '_' with space.
+    Strips known prefixes, strips ™/®, replaces '_' with spaces.
     """
-
     def prettify(label: str) -> str:
         label = label.replace("®", "").replace("™", "")
         label = label.replace("_", " ").strip()
@@ -72,24 +71,23 @@ def _choices_from_features(feature_cols, preferred_prefix=None):
 
     subset = []
 
-    # Pass 1: try preferred_prefix
+    # Pass 1: only preferred_prefix cols
     if preferred_prefix:
         for col in feature_cols:
             if col.startswith(preferred_prefix):
                 raw_label = col[len(preferred_prefix):]
                 subset.append(prettify(raw_label))
 
-    # Pass 2: if nothing with preferred_prefix, fall back to everything
+    # Pass 2: if empty, use all feature cols
     if not subset:
         for col in feature_cols:
             cand = col
-            # strip common prefixes if present
             for p in ["hop_", "malt_", "grain_", "base_", "yeast_", "strain_", "y_", "m_"]:
                 if cand.startswith(p):
                     cand = cand[len(p):]
             subset.append(prettify(cand))
 
-    # Unique + sorted
+    # unique + sorted
     cleaned = []
     for name in subset:
         if name and name not in cleaned:
@@ -109,35 +107,44 @@ ROOT_DIR = os.path.dirname(__file__)
 HOP_MODEL_PATH = os.path.join(ROOT_DIR, "hop_aroma_model.joblib")
 hop_bundle = joblib.load(HOP_MODEL_PATH)
 hop_model = hop_bundle["model"]
-hop_feature_cols = hop_bundle["feature_cols"]          # e.g. ['hop_Citra®', 'hop_Mosaic', ...]
+hop_feature_cols = hop_bundle["feature_cols"]  # e.g. ['hop_Citra®', 'hop_Mosaic', ...]
 hop_dims = [
     a for a in hop_bundle["aroma_dims"]
     if str(a).lower() not in ("nan", "", "none")
 ]
 
+# Build hop dropdown from hop feature columns
+HOP_CHOICES = _choices_from_features(hop_feature_cols, preferred_prefix="hop_")
+
 # --- Malt model bundle ---
-# keys present: "model", "feature_cols", "flavor_cols"
 MALT_MODEL_PATH = os.path.join(ROOT_DIR, "malt_sensory_model.joblib")
 malt_bundle = joblib.load(MALT_MODEL_PATH)
 malt_model = malt_bundle["model"]
-malt_feature_cols = malt_bundle["feature_cols"]        # e.g. ['malt_Maris Otter', 'grain_Caramunich III', ...]
-malt_dims = malt_bundle["flavor_cols"]                 # e.g. ['body', 'sweetness', 'color_srm', ...]
+malt_feature_cols = malt_bundle["feature_cols"]      # numeric spec features
+malt_dims = malt_bundle["flavor_cols"]               # e.g. ['bready','caramel','...']
+
+# New: get list of actual product names (clean Maris Otter etc.) if provided
+MALT_CHOICES = malt_bundle.get("product_names", [])
+if not MALT_CHOICES:
+    # fallback to feature-derived names
+    MALT_CHOICES = _choices_from_features(malt_feature_cols, preferred_prefix="malt_")
 
 # --- Yeast model bundle ---
-# keys present: "model", "feature_cols", "flavor_cols"
 YEAST_MODEL_PATH = os.path.join(ROOT_DIR, "yeast_sensory_model.joblib")
 yeast_bundle = joblib.load(YEAST_MODEL_PATH)
 yeast_model = yeast_bundle["model"]
-yeast_feature_cols = yeast_bundle["feature_cols"]      # e.g. ['yeast_London Ale III', ...]
-yeast_dims = yeast_bundle["flavor_cols"]               # e.g. ['stone_fruit_ester', 'attenuation', ...]
+yeast_feature_cols = yeast_bundle["feature_cols"]
+yeast_dims = yeast_bundle["flavor_cols"]
 
-# Build dropdown lists from each model's known features,
-# using preferred prefixes when we can.
-HOP_CHOICES = _choices_from_features(hop_feature_cols, preferred_prefix="hop_")
-MALT_CHOICES = _choices_from_features(malt_feature_cols, preferred_prefix="malt_")
-YEAST_CHOICES = _choices_from_features(yeast_feature_cols, preferred_prefix="yeast_")
+# New: get list of actual yeast strain names if provided
+YEAST_CHOICES = yeast_bundle.get("strain_names", [])
+if not YEAST_CHOICES:
+    YEAST_CHOICES = _choices_from_features(yeast_feature_cols, preferred_prefix="yeast_")
 
-# Debug info in sidebar so we can inspect what's really in the joblibs on Cloud
+# -------------------------------------------------
+# OPTIONAL: debug sidebar
+# -------------------------------------------------
+
 with st.sidebar:
     st.header("🔬 Debug model vocab")
     st.write("malt_feature_cols[:10] =", malt_feature_cols[:10])
@@ -195,16 +202,24 @@ def advise_hops(user_hops, target_dim, trial_amt=20.0):
     for col in hop_feature_cols:
         if not col.startswith("hop_"):
             continue
-        candidate_label = col[len("hop_"):]  # "Citra®"
+        candidate_label = col[len("hop_"):]  # 'Citra®'
+        # strip branding for display
+        pretty_label = (
+            candidate_label
+            .replace("®", "")
+            .replace("™", "")
+            .replace("_", " ")
+            .strip()
+        )
 
-        trial_bill = user_hops + [{"name": candidate_label, "amt": trial_amt}]
+        trial_bill = user_hops + [{"name": pretty_label, "amt": trial_amt}]
         trial_vec = predict_hop_profile(trial_bill)
         trial_score = trial_vec.get(target_dim, 0.0)
         delta = trial_score - base_score
 
         if delta > best_delta:
             best_delta = delta
-            best_choice = candidate_label
+            best_choice = pretty_label
             best_new_profile = trial_vec
 
     return {
@@ -223,9 +238,11 @@ def advise_hops(user_hops, target_dim, trial_amt=20.0):
 
 def build_malt_features(user_malts):
     """
-    user_malts: [ {"name": "Maris Otter", "pct": 70}, {"name": "Caramunich III", "pct": 8}, ... ]
-    pct is % of grist (0..100).
+    user_malts: [ {"name": "Maris Otter", "pct": 70}, ... ]
+    pct is % of grist.
     Returns (1 x n_features) DataFrame aligned to malt_feature_cols.
+
+    We try 'malt_' prefix first. If not found, try other known prefixes.
     """
     totals = {c: 0.0 for c in malt_feature_cols}
 
@@ -235,11 +252,10 @@ def build_malt_features(user_malts):
         if pct <= 0 or not nm or str(nm).strip() in ["", "-"]:
             continue
 
-        # We'll *try* to match with prefix "malt_".
-        # If no match, loosely fall back to first best match in ANY column.
+        # preferred prefix
         match = _best_feature_match(nm, malt_feature_cols, prefix="malt_")
         if match is None:
-            # fallback pass: try with "grain_" prefix, etc.
+            # fallback across a few prefixes you used in training
             for pfx in ["grain_", "base_", "malt_", "m_"]:
                 match = _best_feature_match(nm, malt_feature_cols, prefix=pfx)
                 if match:
@@ -254,7 +270,6 @@ def build_malt_features(user_malts):
 def predict_malt_profile(user_malts):
     """
     Return dict { malt_dimension -> score }.
-    e.g. {'body': 0.78, 'sweetness': 0.62, 'color_srm': 14.2, ...}
     """
     X = build_malt_features(user_malts)
     y_pred = malt_model.predict(X)[0]
@@ -273,12 +288,18 @@ def advise_malt(user_malts, target_dim, trial_pct=2.0):
     best_new_profile = None
 
     for col in malt_feature_cols:
-        # best label to show user:
+        # create a friendlier label to show the user
         cand_label = col
         for p in ["malt_", "grain_", "base_", "m_"]:
             if cand_label.startswith(p):
                 cand_label = cand_label[len(p):]
-        cand_label = cand_label.replace("®", "").replace("™", "").replace("_", " ").strip()
+        cand_label = (
+            cand_label
+            .replace("®", "")
+            .replace("™", "")
+            .replace("_", " ")
+            .strip()
+        )
 
         trial_bill = user_malts + [{"name": cand_label, "pct": trial_pct}]
         trial_vec = predict_malt_profile(trial_bill)
@@ -312,10 +333,11 @@ def build_yeast_features(user_yeast):
         "ferm_temp_f": 68
       }
 
-    We'll fuzzy match the strain to yeast_feature_cols.
-    We'll try 'yeast_' prefix first, then fallback prefixes.
-    We'll set that matching col = 1.0.
-    (We are NOT yet encoding fermentation temp in features here.)
+    We'll fuzzy match the strain to yeast_feature_cols:
+    * try 'yeast_' prefix first
+    * fallback to ['strain_', 'y_', 'yeast_', '']
+    We'll set the matching col = 1.0.
+    (fermentation temp isn't encoded yet here)
     """
     totals = {c: 0.0 for c in yeast_feature_cols}
 
@@ -323,9 +345,32 @@ def build_yeast_features(user_yeast):
     match = _best_feature_match(strain, yeast_feature_cols, prefix="yeast_")
     if match is None:
         for pfx in ["strain_", "y_", "yeast_", ""]:
-            m2 = _best_feature_match(strain, yeast_feature_cols, prefix=pfx) if pfx else None
-            if m2:
-                match = m2
+            if pfx == "":
+                # final no-prefix fallback:
+                # just brute-force best among all cols
+                # (we can re-use best_feature_match with empty prefix
+                #  but that won't filter; let's do a simple pass)
+                best_any = None
+                score_best = -1
+                cleaned_user = _clean_name(strain)
+                for col in yeast_feature_cols:
+                    # compute naive overlap
+                    cand_label = col
+                    for pp in ["yeast_", "strain_", "y_"]:
+                        if cand_label.startswith(pp):
+                            cand_label = cand_label[len(pp):]
+                    cl = _clean_name(cand_label)
+                    common = set(cleaned_user) & set(cl)
+                    sc = len(common)
+                    if sc > score_best:
+                        score_best = sc
+                        best_any = col
+                match = best_any
+            else:
+                m2 = _best_feature_match(strain, yeast_feature_cols, prefix=pfx)
+                if m2:
+                    match = m2
+            if match:
                 break
 
     if match:
@@ -337,7 +382,6 @@ def build_yeast_features(user_yeast):
 def predict_yeast_profile(user_yeast):
     """
     Return dict { yeast_dim -> score }.
-    e.g. {'stone_fruit_ester': 0.8, 'attenuation': 0.6, 'phenolic': 0.1, ...}
     """
     X = build_yeast_features(user_yeast)
     y_pred = yeast_model.predict(X)[0]
@@ -361,7 +405,13 @@ def advise_yeast(user_yeast, target_dim):
         for p in ["yeast_", "strain_", "y_"]:
             if cand_label.startswith(p):
                 cand_label = cand_label[len(p):]
-        cand_label = cand_label.replace("®", "").replace("™", "").replace("_", " ").strip()
+        cand_label = (
+            cand_label
+            .replace("®", "")
+            .replace("™", "")
+            .replace("_", " ")
+            .strip()
+        )
 
         trial_ferm = {
             "strain": cand_label,
@@ -409,7 +459,6 @@ def plot_radar(profile_dict, title="Profile"):
     vals.append(vals[0])
 
     angles = np.linspace(0, 2 * np.pi, len(dims), endpoint=False)
-
     fig = plt.figure(figsize=(5,5))
     ax = plt.subplot(111, polar=True)
     ax.plot(angles, vals, marker="o")
@@ -484,9 +533,6 @@ st.header("🌿 Hops: Aroma + Hop Addition Advisor")
 c1, c2, c3 = st.columns([1,1,1])
 
 with c1:
-    default_hop1 = HOP_CHOICES[0] if HOP_CHOICES else ""
-    default_hop2 = HOP_CHOICES[1] if len(HOP_CHOICES) > 1 else default_hop1
-
     hop1 = st.selectbox(
         "Hop 1 variety",
         HOP_CHOICES,
@@ -558,14 +604,17 @@ with st.expander("🌾 Malt / Grain Bill: Body, Sweetness, Color Advisor", expan
         malt1 = st.selectbox(
             "Malt 1 name",
             MALT_CHOICES,
-            index=MALT_CHOICES.index("Maris Otter") if "Maris Otter" in MALT_CHOICES else 0,
+            index=MALT_CHOICES.index("FINEST MARIS OTTER® ALE MALT")
+                if "FINEST MARIS OTTER® ALE MALT" in MALT_CHOICES else 0,
             key="malt1_select",
         ) if MALT_CHOICES else ""
 
         malt2 = st.selectbox(
             "Malt 2 name",
             MALT_CHOICES,
-            index=MALT_CHOICES.index("Caramunich III") if "Caramunich III" in MALT_CHOICES else 0,
+            index=MALT_CHOICES.index("CARAMUNICH III")
+                if any(m.upper().startswith("CARAMUNICH") for m in MALT_CHOICES)
+                else 0,
             key="malt2_select",
         ) if MALT_CHOICES else ""
 
@@ -623,10 +672,21 @@ with st.expander("🧫 Yeast & Fermentation: Ester / Mouthfeel Advisor", expande
     y1, y2 = st.columns([1,1])
 
     with y1:
+        # default pick: something like "London Ale III" if present
+        default_yeast_index = 0
+        for cand in ["London Ale III", "LONDON ALE III", "Wyeast 1318", "1318", "Conan"]:
+            for i, yname in enumerate(YEAST_CHOICES):
+                if cand.lower() in yname.lower():
+                    default_yeast_index = i
+                    break
+            else:
+                continue
+            break
+
         yeast_strain = st.selectbox(
             "Yeast strain",
             YEAST_CHOICES,
-            index=YEAST_CHOICES.index("London Ale III") if "London Ale III" in YEAST_CHOICES else 0,
+            index=default_yeast_index if YEAST_CHOICES else 0,
             key="yeast_select",
         ) if YEAST_CHOICES else ""
 
