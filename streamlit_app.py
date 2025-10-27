@@ -257,11 +257,14 @@ def predict_yeast_profile(user_yeast):
 
 def plot_radar(profile_dict, title="Profile"):
     """
-    Spider/radar chart for {dimension: value} mapping.
-    We hide radial tick labels so you only see "shape".
+    Draw a minimalist radar (spider) chart showing only shape and labels —
+    no numeric ticks or radial grid lines.
     """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
     if not profile_dict:
-        fig = plt.figure(figsize=(4,4))
+        fig = plt.figure(figsize=(4, 4))
         ax = plt.subplot(111)
         ax.text(0.5, 0.5, "no data", ha="center", va="center")
         ax.set_axis_off()
@@ -270,33 +273,34 @@ def plot_radar(profile_dict, title="Profile"):
     dims = list(profile_dict.keys())
     vals = [float(profile_dict[d]) for d in dims]
 
-    # close polygon
+    # Close the shape
     dims.append(dims[0])
     vals.append(vals[0])
 
-    angles = np.linspace(0, 2*np.pi, len(dims), endpoint=False)
+    angles = np.linspace(0, 2 * np.pi, len(dims), endpoint=False)
 
-    fig = plt.figure(figsize=(4,4))
+    fig = plt.figure(figsize=(4, 4))
     ax = plt.subplot(111, polar=True)
 
-    ax.plot(angles, vals, marker="o", linewidth=1.5)
-    ax.fill(angles, vals, alpha=0.25)
+    # Draw shape
+    ax.plot(angles, vals, marker="o", linewidth=1.4, color="#1f77b4")
+    ax.fill(angles, vals, color="#1f77b4", alpha=0.25)
 
-    # axis labels = dims (minus repeated last)
+    # Set axes labels
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(dims[:-1], fontsize=8)
+    ax.set_xticklabels(dims[:-1], fontsize=8, color="#333")
 
-    # remove radial tick labels + lighten grid
-    radial_max = max(vals) if max(vals) > 0 else 1.0
-    ax.set_ylim(0, radial_max)
+    # Clean look — no numbers, no rings
     ax.set_yticklabels([])
-    ax.yaxis.grid(False)
+    ax.set_yticks([])
+    ax.grid(False)
     ax.spines['polar'].set_visible(False)
-    ax.grid(color="gray", alpha=0.2)
 
+    # Center title
     ax.set_title(title, fontsize=11, pad=10)
     plt.tight_layout()
     return fig
+
 
 
 # =========================================================
