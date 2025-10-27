@@ -737,26 +737,48 @@ st.markdown("---")
 # BREWMASTER NOTES (AZURE STUB)
 # ---------------------------
 
-st.header("👨‍🔬 Brewmaster Notes (AI Co-Brewer)")
-brewer_goal = st.text_area(
-    "What's your intent for this beer? (e.g. 'Soft hazy IPA with saturated stone fruit and pineapple, low bitterness, pillowy mouthfeel')",
-    "",
-)
+from openai import AzureOpenAI
+import streamlit as st
 
-generate_notes_clicked = st.button("🗣 Generate Brewmaster Notes")
-if generate_notes_clicked:
-    hop_prof_for_notes = hop_profile if hop_profile else {}
-    malt_prof_for_notes = locals().get("malt_profile", {}) or {}
-    yeast_prof_for_notes = locals().get("yeast_profile", {}) or {}
-
-    notes = generate_brewmaster_notes(
-        hop_prof_for_notes,
-        malt_prof_for_notes,
-        yeast_prof_for_notes,
-        brewer_goal,
+def generate_brewmaster_notes(hop_prof, malt_prof, yeast_prof, brewer_goal):
+    """
+    Generate Brewmaster notes using Azure OpenAI (GPT-4.1-mini).
+    """
+    client = AzureOpenAI(
+        azure_endpoint=st.secrets["AZURE_OPENAI_ENDPOINT"],
+        api_key=st.secrets["AZURE_OPENAI_API_KEY"],
+        api_version="2024-02-15-preview"
     )
 
-    st.subheader("Prototype Brewmaster Guidance")
-    st.code(notes, language="text")
+    system_prompt = (
+        "You are a master brewer and fermentation scientist. "
+        "Given hop, malt, and yeast profiles, write detailed professional brewing guidance. "
+        "Focus on sensory balance, process adjustments, and recipe tuning."
+    )
 
-    st.info("Soon this will be Azure OpenAI output using your hop/malt/yeast predictions + style target.")
+    user_prompt = f"""
+    Brewmaster goal: {brewer_goal}
+
+    Hop profile:
+    {hop_prof}
+
+    Malt profile:
+    {malt_prof}
+
+    Yeast / fermentation profile:
+    {yeast_prof}
+
+    Please provide recommendations on hop timing, malt balance, yeast choice, and expected sensory effects.
+    """
+
+    response = client.chat.completions.create(
+        model=st.secrets["AZURE_OPENAI_DEPLOYMENT"],
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        max_tokens=700,
+        temperature=0.7
+    )
+
+    return response.choices[0].message.content.strip()
