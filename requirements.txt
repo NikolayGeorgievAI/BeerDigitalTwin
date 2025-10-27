@@ -1,7 +1,7 @@
-streamlit==1.50.0
+streamlit>=1.36.0
 pandas
 numpy
-matplotlib
 scikit-learn
-scipy
+matplotlib
 joblib
+openai>=1.13.0
