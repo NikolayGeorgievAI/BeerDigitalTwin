@@ -130,54 +130,46 @@ def build_hop_feature_df(hop_inputs, feature_names):
 # -------------------------------------------------
 # Hop aroma prediction wrapper
 # -------------------------------------------------
-def predict_hop_aroma(hop_model, aligned_df):
+def predict_hop_aroma(hop_model, hop_feature_names, user_hops_dict):
     """
-    Try model.predict(aligned_df). Return:
-      - aroma_dict: mapping of each aroma axis to a numeric score
-      - model_error: string or None
+    hop_model           : the loaded scikit-learn Pipeline
+    hop_feature_names   : FULL list of feature names the model was trained on
+                          e.g. ["hop_Adeena", "hop_Admiral", ...]
+    user_hops_dict      : {"Amarillo": grams, "Astra": grams, ...}  (only nonzero hops)
+    returns:
+        aroma_vector (list or np.array of length 8) or zeros if fail
+        debug_info (dict for debugging UI)
     """
-    # define the 8 axes we want to show on the radar
-    aroma_axes = [
-        "fruity",
-        "citrus",
-        "tropical",
-        "earthy",
-        "spicy",
-        "herbal",
-        "floral",
-        "resinous",
-    ]
 
-    # default zeros (will show a flat spider if model can't run)
-    zeros = {ax: 0.0 for ax in aroma_axes}
+    debug_info = {}
 
     if hop_model is None:
-        return zeros, "hop_model is None"
+        debug_info["error"] = "hop_model is None"
+        return [0]*8, debug_info
 
-    # If someone accidentally passed the raw dict, bail early
-    if isinstance(hop_model, dict):
-        return zeros, "hop_model is still a dict (not an estimator)"
+    # 1. create all-zero row with full training columns
+    aligned_df = pd.DataFrame([[0.0]*len(hop_feature_names)],
+                              columns=hop_feature_names)
 
-    # Must have .predict
-    if not hasattr(hop_model, "predict"):
-        return zeros, "hop_model has no .predict"
+    # 2. set the grams for each hop the user actually chose
+    for hop_name, grams in user_hops_dict.items():
+        col_name = f"hop_{hop_name}"
+        if col_name in aligned_df.columns:
+            aligned_df.loc[0, col_name] = grams
+
+    debug_info["aligned_df"] = aligned_df.copy()
 
     try:
-        yhat = hop_model.predict(aligned_df)
-        # Assume yhat is shape (1, N) with N == len(aroma_axes)
-        if hasattr(yhat, "shape") and yhat.shape[0] > 0:
-            first = np.array(yhat[0]).flatten()
-            # pad or trim to length of aroma_axes
-            if len(first) < len(aroma_axes):
-                first = np.pad(first, (0, len(aroma_axes)-len(first)), constant_values=0.0)
-            elif len(first) > len(aroma_axes):
-                first = first[:len(aroma_axes)]
-            aroma_scores = {ax: float(val) for ax, val in zip(aroma_axes, first)}
-            return aroma_scores, None
-        else:
-            return zeros, "Model.predict returned empty or unexpected shape."
+        pred = hop_model.predict(aligned_df)
+        # pred shape: (1, 8) maybe -> tropical, citrus, fruity, resinous, etc
+        aroma_vector = pred[0].tolist()
+        debug_info["prediction_raw"] = aroma_vector
     except Exception as e:
-        return zeros, f"Predict exception: {e}"
+        aroma_vector = [0]*8
+        debug_info["exception"] = f"Predict exception: {e}"
+
+    return aroma_vector, debug_info
+
 
 
 # -------------------------------------------------
