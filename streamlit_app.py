@@ -737,24 +737,57 @@ st.markdown("---")
 # BREWMASTER NOTES (AZURE AI)
 # ---------------------------
 
-st.header("👨‍🔬 Brewmaster Notes (AI Co-Brewer)")
-brewer_goal = st.text_area(
-    "What's your intent for this beer? (e.g. 'Soft hazy IPA with saturated stone fruit and pineapple, low bitterness, pillowy mouthfeel')",
-    "",
-)
+from openai import AzureOpenAI
+import streamlit as st
 
-generate_notes_clicked = st.button("🗣 Generate Brewmaster Notes")
-if generate_notes_clicked:
-    hop_prof_for_notes = hop_profile if hop_profile else {}
-    malt_prof_for_notes = locals().get("malt_profile", {}) or {}
-    yeast_prof_for_notes = locals().get("yeast_profile", {}) or {}
+def generate_brewmaster_notes(hop_prof, malt_prof, yeast_prof, brewer_goal):
+    """
+    Generate Brewmaster notes using Azure OpenAI (GPT-4.1-mini).
+    """
+    try:
+        client = AzureOpenAI(
+            azure_endpoint=st.secrets["AZURE_OPENAI_ENDPOINT"],
+            api_key=st.secrets["AZURE_OPENAI_API_KEY"],
+            api_version="2024-02-15-preview"
+        )
 
-    notes = generate_brewmaster_notes(
-        hop_prof_for_notes,
-        malt_prof_for_notes,
-        yeast_prof_for_notes,
-        brewer_goal,
-    )
+        system_prompt = (
+            "You are a master brewer and fermentation scientist. "
+            "Given hop, malt, and yeast sensory data, produce expert guidance. "
+            "Explain likely sensory balance, style alignment, and brewing adjustments "
+            "to achieve the stated goal. Be precise and descriptive, not generic."
+        )
 
-    st.subheader("Prototype Brewmaster Guidance")
-    st.code(notes, language="text")
+        user_prompt = f"""
+        Brewmaster goal: {brewer_goal}
+
+        Hop profile:
+        {hop_prof}
+
+        Malt profile:
+        {malt_prof}
+
+        Yeast / fermentation profile:
+        {yeast_prof}
+
+        Provide professional recommendations on:
+        - hop selection and timing
+        - malt balance and sweetness
+        - yeast strain or fermentation control
+        - expected mouthfeel and finish
+        """
+
+        response = client.chat.completions.create(
+            model=st.secrets["AZURE_OPENAI_DEPLOYMENT"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=700,
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        return f"[Azure OpenAI call failed: {e}]"
