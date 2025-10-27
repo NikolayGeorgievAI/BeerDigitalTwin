@@ -28,146 +28,60 @@ st.set_page_config(
 # We'll draw radar plots for hops, malt, and yeast.
 # We hide numeric tick labels so users only see shape + axis labels.
 
-def _radar_factory(num_vars, frame='circle'):
+import matplotlib.pyplot as plt
+import numpy as np
+
+def make_clean_radar(labels, values, title=None, max_val=1.0):
     """
-    Create a radar chart projection with `num_vars` axes.
-    Returns a function that creates (theta, RadarAxes subclass).
-    Adapted from matplotlib's radar example.
+    Return a compact radar chart figure:
+    - values scaled to max_val
+    - category labels kept
+    - NO numeric tick labels anywhere
+    - light grid
+    - optional title
     """
-    # evenly spaced axis angles (in radians)
-    theta = np.linspace(0, 2 * np.pi, num_vars, endpoint=False)
+    # Safety: if everything is 0, avoid div-by-zero / degenerate polygon
+    max_val = max(max_val, 1e-6)
 
-    class RadarAxes(PolarAxes):
-        name = 'radar'
-        # draw lines between all points (no interpolation)
-        RESOLUTION = 1
+    # Close the polygon
+    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False)
+    angles = np.concatenate([angles, angles[:1]])
+    vals_scaled = [v / max_val for v in values]
+    vals_scaled.append(vals_scaled[0])
 
-        def fill(self, *args, closed=True, **kwargs):
-            return super().fill(*args, closed=closed, **kwargs)
+    fig, ax = plt.subplots(
+        subplot_kw={"projection": "polar"},
+        figsize=(3.5, 3.5),
+    )
 
-        def plot(self, *args, **kwargs):
-            lines = super().plot(*args, **kwargs)
-            for line in lines:
-                line.set_marker("o")
-            return lines
+    # Draw fill + outline
+    ax.plot(angles, vals_scaled, color="#1f77b4", linewidth=2)
+    ax.fill(angles, vals_scaled, color="#1f77b4", alpha=0.25)
 
-        def set_varlabels(self, labels, fontsize=8):
-            self.set_thetagrids(
-                np.degrees(theta),
-                labels,
-                fontsize=fontsize
-            )
+    # Category labels at each spoke
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels, fontsize=9)
 
-        def _gen_axes_patch(self):
-            # Axes patch must be centered at (0.5, 0.5) and have radius .5
-            if frame == 'circle':
-                return plt.Circle((0.5, 0.5), 0.5)
-            elif frame == 'polygon':
-                verts = self._unit_poly_verts(theta)
-                return plt.Polygon(verts, closed=True, edgecolor="black")
-            else:
-                raise ValueError(f"Unknown frame: {frame}")
-
-        def draw(self, renderer):
-            super().draw(renderer)
-            # we don't do anything special after draw
-
-        def _gen_axes_spines(self):
-            if frame == 'circle':
-                return super()._gen_axes_spines()
-            # polygon frame: make a spine with polygon path
-            spine_type = 'circle'
-            verts = self._unit_poly_verts(theta)
-            verts.append(verts[0])
-            path = Path(verts)
-            spine = Spine(self, spine_type, path)
-            spine.set_transform(self.transAxes)
-            return {'polar': spine}
-
-        @staticmethod
-        def _unit_poly_verts(theta_vals):
-            """Return vertices of polygon for subplot axes (unit circle)."""
-            x0, y0, r = [0.5]*3
-            verts = [
-                (r*np.cos(t)+x0, r*np.sin(t)+y0)
-                for t in theta_vals
-            ]
-            return verts
-
-    register_projection(RadarAxes)
-    return theta
-
-
-def make_radar_figure(labels, values, title="", max_val=1.0):
-    """
-    Build a radar chart figure.
-    Numeric tick labels are fully hidden (only axis names remain).
-    """
-    if len(labels) == 0:
-        fig = plt.figure(figsize=(3,3))
-        ax = fig.add_subplot(111)
-        ax.text(0.5, 0.5, "no data", ha="center", va="center")
-        ax.set_axis_off()
-        return fig
-
-    L = len(labels)
-    theta = _radar_factory(L, frame='polygon')
-
-    values_closed = list(values) + [values[0]]
-    theta_closed  = np.concatenate([theta, [theta[0]]])
-
-    fig = plt.figure(figsize=(3,3))
-    ax = fig.add_subplot(111, projection='radar')
-    ax.set_rorigin(-0.1)
-
-    # --- hide all radial tick labels & ticks ---
-    ax.set_yticklabels([])     # hides numbers
-    ax.set_yticks([])          # removes tick marks
-    ax.tick_params(labelbottom=False, labelleft=False)  # safety net
-
-    ax.set_ylim(0, max_val)
-
-    # Plot the filled polygon
-    ax.plot(theta_closed, values_closed, color="#1f77b4", lw=1.8)
-    ax.fill(theta_closed, values_closed, color="#1f77b4", alpha=0.25)
-
-    ax.set_varlabels(labels, fontsize=7)
-    ax.grid(color='#cccccc', alpha=0.3)
-    ax.set_title(title, fontsize=9, pad=12)
-
-    return fig
-
-
-    L = len(labels)
-
-    # angles for each axis
-    theta = _radar_factory(L, frame='polygon')
-
-    # We want to close the polygon for plotting/filling, so append first point.
-    values_closed = list(values) + [values[0]]
-    theta_closed  = np.concatenate([theta, [theta[0]]])
-
-    fig = plt.figure(figsize=(3,3))
-    ax = fig.add_subplot(111, projection='radar')
-    ax.set_rorigin(-0.1)
-
-    # Hide radial tick labels
+    # Hide *all* radial tick labels
+    ax.set_yticks([])
     ax.set_yticklabels([])
-    ax.set_ylim(0, max_val)
 
-    # Plot the closed polygon
-    ax.plot(theta_closed, values_closed, color="#1f77b4")
-    ax.fill(theta_closed, values_closed, color="#1f77b4", alpha=0.25)
+    # Also hide the radial tick lines labels themselves (minor artifacts)
+    for tick in ax.yaxis.get_major_ticks():
+        tick.label1.set_visible(False)
 
-    # Label axes
-    ax.set_varlabels(labels, fontsize=7)
+    # Light radial grid for shape reference
+    ax.grid(True, color="#cccccc", alpha=0.4)
 
-    # Light grid styling
-    ax.grid(color='#999999', alpha=0.3)
+    # Make sure radius limit is 0..1 so scale is consistent
+    ax.set_ylim(0, 1)
 
-    ax.set_title(title, fontsize=9, pad=12)
+    # Optional title
+    if title:
+        ax.set_title(title, fontsize=11, pad=14, fontweight="bold")
 
     return fig
+
 
 
 ###############################################################################
