@@ -582,40 +582,42 @@ def main():
         ]
         st.write(", ".join(used_hops) if used_hops else "—")
 
-    # Debug block
+       # Debug block
     st.markdown("---")
     st.markdown("### 🔬 Debug info")
 
     st.write("User hop entries:")
-    st.write(hop_entries)
+    st.json(hop_entries)
 
     st.write("User malt entries:")
-    st.write(malt_entries)
+    st.json(malt_entries)
 
     st.write("Selected yeast:", yeast_choice)
 
-    st.write("Aroma scores dict:")
-    st.write(aroma_scores)
+    st.write("Aroma scores dict (after mapping):")
+    st.json(aroma_scores)
 
-    st.write("Wrapper feature_names:")
-    st.write(hop_wrapper.feature_names)
+    st.write("Wrapper feature_names (truncated first 20):")
+    if hop_wrapper.feature_names:
+        st.write(hop_wrapper.feature_names[:20])
+        st.write("... total:", len(hop_wrapper.feature_names))
 
     st.write("Total hop mass (g):", total_hop_mass)
-
     st.write("used_bin_mode:", used_bin_mode)
 
-    st.write("Bin hits (if bin mode):")
-    st.write(bin_debug)
+    st.write("Sparse aggregate we built:")
+    st.json(sparse_debug)
 
-    st.write("Sparse aggregate (if sparse mode):")
-    st.write(sparse_debug)
-
-    st.write("Aligned DF passed to model:")
-    st.write(aligned_df)
+    st.write("Aligned DF columns count:", aligned_df.shape[1])
+    st.write("Aligned DF non-zero columns:")
+    if not aligned_df.empty:
+        nz_cols = [c for c in aligned_df.columns if aligned_df.iloc[0][c] != 0]
+        st.write(nz_cols)
+        st.write(aligned_df[nz_cols])
 
     st.write("Raw model prediction output:")
-    st.write(f"raw_pred shape: {getattr(raw_pred, 'shape', None)}")
-    st.write(raw_pred)
+    st.write("raw_pred.shape:", getattr(raw_pred, 'shape', None))
+    st.write("raw_pred contents:", raw_pred.tolist() if hasattr(raw_pred, 'tolist') else raw_pred)
 
     st.write("Yeast dataset columns:")
     st.write(list(yeast_df.columns))
