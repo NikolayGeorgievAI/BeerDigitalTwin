@@ -62,25 +62,42 @@ hop_feature_cols = hop_bundle["feature_cols"]
 hop_dims = [a for a in hop_bundle["aroma_dims"] if str(a).lower() not in ("nan", "", "none")]
 
 # --- Malt model bundle ---
-# Assumptions:
-#   - file: malt_sensory_model.joblib
-#   - same structure: { "model": ..., "feature_cols": [...], "aroma_dims": [...] }
 MALT_MODEL_PATH = os.path.join(ROOT_DIR, "malt_sensory_model.joblib")
 malt_bundle = joblib.load(MALT_MODEL_PATH)
-malt_model = malt_bundle["model"]
-malt_feature_cols = malt_bundle["feature_cols"]
-# We'll call these malt dimensions (sweetness, caramel, toast, body, color, etc.)
-malt_dims = [a for a in malt_bundle["aroma_dims"] if str(a).lower() not in ("nan", "", "none")]
+
+# DEBUG: let's expose what keys this bundle actually has
+# We'll also use .get() so we don't crash the whole app.
+malt_bundle_keys = list(malt_bundle.keys()) if hasattr(malt_bundle, "keys") else type(malt_bundle)
+
+# Try common names
+malt_model = malt_bundle.get("model", None)
+malt_feature_cols = malt_bundle.get("feature_cols", [])
+raw_malt_dims = (
+    malt_bundle.get("aroma_dims")
+    or malt_bundle.get("malt_dims")
+    or malt_bundle.get("output_dims")
+    or malt_bundle.get("targets")
+    or []
+)
+malt_dims = [a for a in raw_malt_dims if str(a).lower() not in ("nan", "", "none")]
 
 # --- Yeast model bundle ---
-# Assumptions:
-#   - file: yeast_sensory_model.joblib
-#   - same structure: { "model": ..., "feature_cols": [...], "aroma_dims": [...] }
 YEAST_MODEL_PATH = os.path.join(ROOT_DIR, "yeast_sensory_model.joblib")
 yeast_bundle = joblib.load(YEAST_MODEL_PATH)
-yeast_model = yeast_bundle["model"]
-yeast_feature_cols = yeast_bundle["feature_cols"]
-yeast_dims = [a for a in yeast_bundle["aroma_dims"] if str(a).lower() not in ("nan", "", "none")]
+
+yeast_bundle_keys = list(yeast_bundle.keys()) if hasattr(yeast_bundle, "keys") else type(yeast_bundle)
+
+yeast_model = yeast_bundle.get("model", None)
+yeast_feature_cols = yeast_bundle.get("feature_cols", [])
+raw_yeast_dims = (
+    yeast_bundle.get("aroma_dims")
+    or yeast_bundle.get("yeast_dims")
+    or yeast_bundle.get("output_dims")
+    or yeast_bundle.get("targets")
+    or []
+)
+yeast_dims = [a for a in raw_yeast_dims if str(a).lower() not in ("nan", "", "none")]
+
 
 # -------------------------------------------------
 # HOP FUNCTIONS
@@ -355,6 +372,13 @@ def generate_brewmaster_notes(hop_prof, malt_prof, yeast_prof, brewer_goal):
 # -------------------------------------------------
 
 st.set_page_config(page_title="Beer Recipe Digital Twin", page_icon="🍺", layout="centered")
+st.sidebar.header("⚙ Debug model bundles")
+st.sidebar.write("malt_bundle keys:", malt_bundle_keys)
+st.sidebar.write("yeast_bundle keys:", yeast_bundle_keys)
+st.sidebar.write("malt_feature_cols len:", len(malt_feature_cols))
+st.sidebar.write("yeast_feature_cols len:", len(yeast_feature_cols))
+st.sidebar.write("malt_dims:", raw_malt_dims)
+st.sidebar.write("yeast_dims:", raw_yeast_dims)
 
 st.title("🍺 Beer Recipe Digital Twin")
 st.markdown("""
