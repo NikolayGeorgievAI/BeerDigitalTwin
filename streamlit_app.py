@@ -101,11 +101,7 @@ def _radar_factory(num_vars, frame='circle'):
 def make_radar_figure(labels, values, title="", max_val=1.0):
     """
     Build a radar chart figure.
-    - labels: list of axis labels
-    - values: list of numeric values (same length as labels)
-    - title: small title on top
-    - max_val: radial limit
-    We hide radial tick labels so only shape is emphasized.
+    Numeric tick labels are fully hidden (only axis names remain).
     """
     if len(labels) == 0:
         fig = plt.figure(figsize=(3,3))
@@ -113,6 +109,34 @@ def make_radar_figure(labels, values, title="", max_val=1.0):
         ax.text(0.5, 0.5, "no data", ha="center", va="center")
         ax.set_axis_off()
         return fig
+
+    L = len(labels)
+    theta = _radar_factory(L, frame='polygon')
+
+    values_closed = list(values) + [values[0]]
+    theta_closed  = np.concatenate([theta, [theta[0]]])
+
+    fig = plt.figure(figsize=(3,3))
+    ax = fig.add_subplot(111, projection='radar')
+    ax.set_rorigin(-0.1)
+
+    # --- hide all radial tick labels & ticks ---
+    ax.set_yticklabels([])     # hides numbers
+    ax.set_yticks([])          # removes tick marks
+    ax.tick_params(labelbottom=False, labelleft=False)  # safety net
+
+    ax.set_ylim(0, max_val)
+
+    # Plot the filled polygon
+    ax.plot(theta_closed, values_closed, color="#1f77b4", lw=1.8)
+    ax.fill(theta_closed, values_closed, color="#1f77b4", alpha=0.25)
+
+    ax.set_varlabels(labels, fontsize=7)
+    ax.grid(color='#cccccc', alpha=0.3)
+    ax.set_title(title, fontsize=9, pad=12)
+
+    return fig
+
 
     L = len(labels)
 
