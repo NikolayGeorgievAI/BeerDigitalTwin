@@ -690,6 +690,14 @@ with col_save:
             },
             "ai_notes": ai_md if 'ai_md' in locals() else "",
         }
+if "ai_log" not in st.session_state:
+    st.session_state["ai_log"] = []
+
+st.session_state["ai_log"].append({
+    "timestamp": datetime.now().isoformat(timespec="seconds"),
+    "user_intent": user_intent_text,   # whatever variable you already capture from textarea
+    "notes": ai_md,
+})
 
         st.session_state["saved_batches"][batch_name] = copy.deepcopy(batch_payload)
 
@@ -775,4 +783,13 @@ if notes_clicked:
     st.caption(
         "Prototype — not production brewing advice. "
         "Always match your yeast strain's process window."
+    )
+with st.expander("🧪 Debug / Export AI guidance log (dev only)"):
+    st.caption("These pairs can later be used to fine-tune / evaluate advisor quality.")
+    st.code(json.dumps(st.session_state["ai_log"], indent=2))
+    st.download_button(
+        "⬇ Download log as JSON",
+        data=json.dumps(st.session_state["ai_log"], indent=2),
+        file_name="ai_guidance_log.json",
+        mime="application/json"
     )
