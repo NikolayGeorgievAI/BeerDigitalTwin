@@ -609,6 +609,77 @@ if predict_clicked:
     st.pyplot(radar_fig)
 
 st.markdown("---")
+import json
+import copy
+from datetime import datetime
+
+# --- Initialize saved batches container in session ---
+if "saved_batches" not in st.session_state:
+    st.session_state["saved_batches"] = {}  # {batch_name: batch_dict}
+
+st.markdown("## 🗂 Recipe Snapshot & Recall")
+
+col_save, col_load = st.columns([2, 2])
+
+with col_save:
+    st.markdown("#### Save current batch")
+    default_name = f"{st.session_state.get('main_hop', 'Batch')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    batch_name = st.text_input("Batch name", value=default_name)
+    if st.button("💾 Save this batch"):
+        # build a snapshot of the current state
+        batch_payload = {
+            "inputs": {
+                "main_hop": st.session_state.get("main_hop", ""),
+                "secondary_hop": st.session_state.get("secondary_hop", ""),
+                "hop_1_amount_g": st.session_state.get("hop_1_amount_g", 0.0),
+                "hop_2_amount_g": st.session_state.get("hop_2_amount_g", 0.0),
+                "malt_base": st.session_state.get("malt_base", ""),
+                "malt_special": st.session_state.get("malt_special", ""),
+                "malt_1_pct": st.session_state.get("malt_1_pct", 0.0),
+                "malt_2_pct": st.session_state.get("malt_2_pct", 0.0),
+                "yeast_strain": st.session_state.get("yeast_strain", ""),
+                "ferm_temp_c": st.session_state.get("ferm_temp_c", 20.0),
+            },
+            "predictions": {
+                "hop_aroma_pred": hop_aroma_pred if 'hop_aroma_pred' in locals() else None,
+                "malt_profile_pred": malt_profile_pred if 'malt_profile_pred' in locals() else None,
+                "yeast_profile_pred": yeast_profile_pred if 'yeast_profile_pred' in locals() else None,
+            },
+            "ai_notes": ai_md if 'ai_md' in locals() else "",
+        }
+
+        st.session_state["saved_batches"][batch_name] = copy.deepcopy(batch_payload)
+
+        st.success(f"Saved batch: {batch_name} ✅")
+
+        # optional: show JSON so user can copy/store offline
+        with st.expander("Show saved JSON for export"):
+            st.code(json.dumps(batch_payload, indent=2))
+
+with col_load:
+    st.markdown("#### Load previous batch")
+    batch_options = list(st.session_state["saved_batches"].keys())
+    if batch_options:
+        selection = st.selectbox("Select a saved batch", options=batch_options)
+        if st.button("📂 Load this batch"):
+            loaded = st.session_state["saved_batches"][selection]
+
+            # restore input widgets in session_state
+            st.session_state["main_hop"] = loaded["inputs"]["main_hop"]
+            st.session_state["secondary_hop"] = loaded["inputs"]["secondary_hop"]
+            st.session_state["hop_1_amount_g"] = loaded["inputs"]["hop_1_amount_g"]
+            st.session_state["hop_2_amount_g"] = loaded["inputs"]["hop_2_amount_g"]
+            st.session_state["malt_base"] = loaded["inputs"]["malt_base"]
+            st.session_state["malt_special"] = loaded["inputs"]["malt_special"]
+            st.session_state["malt_1_pct"] = loaded["inputs"]["malt_1_pct"]
+            st.session_state["malt_2_pct"] = loaded["inputs"]["malt_2_pct"]
+            st.session_state["yeast_strain"] = loaded["inputs"]["yeast_strain"]
+            st.session_state["ferm_temp_c"] = loaded["inputs"]["ferm_temp_c"]
+
+            st.success(f"Loaded batch: {selection} ✅")
+            st.info("Scroll up — inputs have been restored. Click Predict again to recompute visuals.")
+    else:
+        st.caption("_No saved batches yet — save one on the left!_")
 
 # ---------------------
 # AI BREWMASTER GUIDANCE
