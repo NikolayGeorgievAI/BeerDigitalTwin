@@ -18,23 +18,56 @@ st.set_page_config(
 @st.cache_resource
 def load_hop_model():
     """
-    Load hop_aroma_model.joblib.
-    This might be either:
-      - A bare estimator with .predict
-      - A dict containing {"model": estimator, "feature_names": [...]}
-    We normalize that here and return (model_obj, feature_names or None).
+    Load hop_aroma_model.joblib and return a tuple:
+      (pipeline_estimator, expected_feature_names)
+
+    The .joblib may be:
+      - a dict with {"model": pipeline, "feature_names": [...]}, or
+      - a bare Pipeline, in which case we try to introspect the feature names.
     """
     raw = joblib.load("hop_aroma_model.joblib")
 
+    # Step 1: unwrap dicts
     if isinstance(raw, dict):
         model_obj = raw.get("model", None)
         feature_names = raw.get("feature_names", None)
     else:
         model_obj = raw
-        # some sklearn models expose .feature_names_in_
         feature_names = getattr(raw, "feature_names_in_", None)
 
+    if model_obj is None:
+        return None, None
+
+    # Step 2: if we still don't have feature_names, try to infer them
+    if feature_names is None:
+        # Try attribute on the pipeline itself
+        if hasattr(model_obj, "feature_names_in_"):
+            feature_names = list(model_obj.feature_names_in_)
+        # Try top-level get_feature_names_out()
+        elif hasattr(model_obj, "get_feature_names_out"):
+            try:
+                feature_names = list(model_obj.get_feature_names_out())
+            except Exception:
+                feature_names = None
+        # Try first step of pipeline (often a ColumnTransformer or vectorizer)
+        if feature_names is None and hasattr(model_obj, "named_steps"):
+            for step_name, step_est in model_obj.named_steps.items():
+                if hasattr(step_est, "get_feature_names_out"):
+                    try:
+                        feature_names = list(step_est.get_feature_names_out())
+                        break
+                    except Exception:
+                        pass
+                if hasattr(step_est, "feature_names_in_"):
+                    try:
+                        feature_names = list(step_est.feature_names_in_)
+                        break
+                    except Exception:
+                        pass
+
+    # As a last resort, leave feature_names as None
     return model_obj, feature_names
+
 
 @st.cache_resource
 def load_yeast_df():
@@ -52,36 +85,46 @@ def build_hop_feature_df(hop_inputs, feature_names):
     """
     hop_inputs: list of (hop_name, grams)
         e.g. [("Simcoe", 100.0), ("Amarillo", 50.0), ...]
-    feature_names: list[str] the model expects, e.g. ["hop_Simcoe","hop_Amarillo", ...]
+    feature_names: list[str] the model expects, e.g. 
+        ["hop_Adeena", "hop_Admiral", "hop_African Queen", ...]
 
-    returns aligned_df: shape (1, len(feature_names))
-    and a simpler df for debugging raw grams by variety
+    Return:
+      aligned_df: DataFrame with exactly those columns in that order
+      debug_df:   DataFrame with user's nonzero grams per hop
     """
-    # sum grams per hop name
+    # 1. Aggregate grams by hop name from user input
     agg = {}
     for hop_name, g in hop_inputs:
         if hop_name and g > 0:
             agg[hop_name] = agg.get(hop_name, 0.0) + float(g)
 
-    # build model-row
+    # debug_df for display
+    debug_df = pd.DataFrame([agg]) if agg else pd.DataFrame([{}])
+
+    # 2. Build the row we'll feed the model
     row = {}
-    if feature_names is not None:
-        # explicit alignment to model's columns
+
+    if feature_names:
+        # The model told us exactly which columns it wants.
+        # We'll fill them all in order, defaulting to 0.0
         for feat in feature_names:
-            # e.g. feat="hop_Simcoe"
-            # extract the varietal name from "hop_*"
-            base_name = feat.replace("hop_", "")
-            row[feat] = agg.get(base_name, 0.0)
+            # trained features look like hop_<Variety Name>
+            if feat.startswith("hop_"):
+                base_name = feat.replace("hop_", "")
+                row[feat] = agg.get(base_name, 0.0)
+            else:
+                # if there are any non-hop features, just set 0 for now
+                row[feat] = 0.0
+        aligned_df = pd.DataFrame([row], columns=feature_names)
     else:
-        # fallback: just one row from whatever we have
+        # We don't know the feature_names -> fall back to whatever we have
+        # (This WILL still error with the pipeline, but we keep it for debug.)
         for k, v in agg.items():
             row[f"hop_{k}"] = v
+        aligned_df = pd.DataFrame([row])
 
-    aligned_df = pd.DataFrame([row])
-
-    # raw debug df
-    debug_df = pd.DataFrame([agg]) if agg else pd.DataFrame([{}])
     return aligned_df, debug_df
+
 
 
 # -------------------------------------------------
