@@ -6,52 +6,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
-
+import re
+import json
+import copy
+from datetime import datetime
 from openai import OpenAI
 from typing import Dict, List
-
-def flavor_tweak_suggestions(goal: str,
-                             hop_pred: dict,
-                             malt_pred: dict,
-                             yeast_pred: dict):
-    """
-    goal: str like "More tropical fruit", "More body / pillowy mouthfeel", ...
-    hop_pred/malt_pred/yeast_pred: the same dicts you already display.
-    Returns list[str] of suggestions.
-    """
-
-    tips = []
-
-    goal = goal.lower()
-
-    if "tropical" in goal or "mango" in goal or "fruit" in goal:
-        tips.append("⬆ Use hops known for mango / pineapple (Citra, Mosaic, Azacca) in whirlpool and dry hop.")
-        tips.append("⬆ Push later additions (post-boil ~75°C) instead of bittering additions.")
-        tips.append("⬇ Avoid piney / grassy hops that mask juicy fruit.")
-    if "body" in goal or "pillowy" in goal or "mouthfeel" in goal:
-        tips.append("⬆ Add flaked oats / wheat malt (5–10%) to boost protein haze and silkiness.")
-        tips.append("⬇ Reduce high attenuation yeast; pick medium-attenuating English/NEIPA strains.")
-        tips.append("⬇ Ferment ~18–20°C to avoid thinning out the body.")
-    if "drier" in goal or "crisper" in goal or "bitter" in goal:
-        tips.append("⬆ Use a higher-attenuating yeast or raise ferm temp slightly for a drier finish.")
-        tips.append("⬆ Add a small early-boil hop charge to introduce a firmer bitterness backbone.")
-        tips.append("⬇ Soften late-fruit-heavy whirlpool if it's too sweet.")
-    if "color" in goal or "darker" in goal or "amber" in goal:
-        tips.append("⬆ Add a touch of light crystal / Vienna / Munich malt for color and depth.")
-        tips.append("⬇ Keep base pale malt but blend 5% toasted malt to get richer hue.")
-    if not tips:
-        tips.append("No preset for that goal yet — try 'More tropical fruit', 'More body / pillowy mouthfeel', or 'Drier / crisper'.")
-
-    # tiny bit of contextual seasoning using live predictions
-    # example: if sweetness already high
-    if malt_pred and "sweetness" in malt_pred and malt_pred["sweetness"] > 15:
-        tips.append("Note: sweetness is already fairly high — consider balancing with a tiny early bittering hop so it doesn't feel cloying.")
-    if yeast_pred and "Attenuation_num" in yeast_pred and yeast_pred["Attenuation_num"] > 0.8:
-        tips.append("Note: attenuation looks high / dry — mouthfeel might thin out if you ferment too warm.")
-
-    return tips
-
-
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
@@ -69,10 +29,54 @@ plt.rcParams["axes.spines.top"] = False
 plt.rcParams["axes.spines.right"] = False
 
 # -------------------------------------------------
+# HELPER: flavor tweak suggestions
+# -------------------------------------------------
+def flavor_tweak_suggestions(goal: str,
+                             hop_pred: dict,
+                             malt_pred: dict,
+                             yeast_pred: dict):
+    """
+    goal: str like "More tropical fruit", "More body / pillowy mouthfeel", etc.
+    hop_pred/malt_pred/yeast_pred: dicts of current predictions
+    Returns list[str] of actionable suggestions.
+    """
+
+    tips = []
+    goal_lower = goal.lower()
+
+    if "tropical" in goal_lower or "mango" in goal_lower or "fruit" in goal_lower:
+        tips.append("⬆ Use hops known for mango / pineapple (Citra, Mosaic, Azacca) in whirlpool and dry hop.")
+        tips.append("⬆ Push later additions (post-boil ~75°C) instead of bittering additions.")
+        tips.append("⬇ Avoid piney / grassy hops that mask juicy fruit.")
+
+    if "body" in goal_lower or "pillowy" in goal_lower or "mouthfeel" in goal_lower:
+        tips.append("⬆ Add flaked oats / wheat malt (5–10%) to boost protein haze and silkiness.")
+        tips.append("⬇ Use a medium-attenuating, ester-friendly yeast (NEIPA / English style) instead of bone-dry strains.")
+        tips.append("⬇ Ferment ~18–20°C to keep the mouthfeel soft instead of thin.")
+
+    if "drier" in goal_lower or "crisper" in goal_lower or "bitter" in goal_lower:
+        tips.append("⬆ Consider a slightly higher-attenuating yeast or a slightly warmer ferment to dry it out.")
+        tips.append("⬆ Add a small earlier-boil hop charge for firmer bitterness backbone.")
+        tips.append("⬇ Trim some late sweet fruit-bomb whirlpool if it's too juicy/sweet.")
+
+    if "color" in goal_lower or "darker" in goal_lower or "amber" in goal_lower:
+        tips.append("⬆ Add a touch of light crystal / Vienna / Munich for color + depth (5% range).")
+        tips.append("⬇ Keep base pale malt but introduce slight toast for richer hue.")
+
+    if not tips:
+        tips.append("No preset for that goal yet — try 'More tropical fruit', 'More body / pillowy mouthfeel', or 'Drier / crisper'.")
+
+    # contextual spice
+    if malt_pred and "sweetness" in malt_pred and malt_pred["sweetness"] > 15:
+        tips.append("Note: sweetness is already fairly high — consider a tiny early bittering hop to avoid cloying finish.")
+    if yeast_pred and ("Attenuation_num" in yeast_pred and yeast_pred["Attenuation_num"] > 0.8):
+        tips.append("Note: high attenuation / drier profile — watch ferm temp so body doesn’t thin out too far.")
+
+    return tips
+
+# -------------------------------------------------
 # UTILS: NORMALIZATION / MATCHING
 # -------------------------------------------------
-import re
-
 def _clean_name(name: str) -> str:
     """Lowercase, strip special marks, keep alnum only."""
     if not name:
@@ -231,7 +235,7 @@ def build_yeast_features(yeast_info):
     match = _best_feature_match(strain_nm, yeast_feature_cols, "yeast_")
     if match is None:
         for pfx in ["yeast_","strain_","y_",""]:
-            if pfx=="":
+            if pfx=="":  # skip final fallback
                 continue
             tempm = _best_feature_match(strain_nm, yeast_feature_cols, pfx)
             if tempm:
@@ -256,10 +260,9 @@ def _radar_axes(num_vars: int, subplot, title: str):
     ax = plt.subplot(subplot, polar=True)
     ax.set_title(title, fontsize=22, pad=30, fontweight="bold")
 
-    # No numeric tick labels:
+    # Hide numeric tick labels:
     ax.set_yticklabels([])
     ax.set_yticks([])
-    # Light radial grid
     ax.grid(color="#cccccc", linestyle="-", linewidth=0.5, alpha=0.5)
 
     return ax
@@ -276,55 +279,43 @@ def _plot_radar(ax, labels: List[str], values: List[float], color="#1f77b4"):
 
     vals = np.array(values, dtype=float)
 
-    # close loop
     theta_closed = np.concatenate([theta, theta[:1]])
     vals_closed  = np.concatenate([vals,  vals[:1]])
 
     ax.plot(theta_closed, vals_closed, color=color, linewidth=2)
     ax.fill(theta_closed, vals_closed, color=color, alpha=0.2)
 
-    # Set x tick labels = trait strings
     ax.set_xticks(theta)
     ax.set_xticklabels(labels, fontsize=16)
 
 def build_radar_figures(hop_vec, malt_vec, yeast_vec):
     """
     hop_vec, malt_vec, yeast_vec are dicts of numeric predictions.
-    We choose a small subset / shape for each web to keep them legible.
     We'll scale each web independently 0..max_val to fill it.
     """
-    # 1) Hops radar labels (pick a representative subset in stable order)
+    # 1) Hops radar subset
     hop_traits = [
         "citrus","fruity","floral","grassy","pine","herbal","stone fruit","cedar"
     ]
     hv = []
     for t in hop_traits:
-        # map "stone fruit" -> "stone fruit", "fruity"->maybe "fruity"
-        # we try .get with fallback 0
-        key_candidates = [
-            t,
-            t.replace(" ","_"),
-            t.replace(" ",""),
-        ]
+        cand_keys = [t, t.replace(" ","_"), t.replace(" ","")]
         v = 0.0
-        for k in key_candidates:
-            if k in hop_vec:
-                v = hop_vec[k]
+        for ck in cand_keys:
+            if ck in hop_vec:
+                v = hop_vec[ck]
                 break
         hv.append(max(v, 0.0))
     hop_max = max(hv+[1e-9])
+    hop_scaled = [(x/hop_max if hop_max>0 else 0.0) for x in hv]
 
-    hop_scaled = [ (x/hop_max if hop_max>0 else 0.0) for x in hv ]
-
-    # 2) Malt radar: we typically have sweetness, body_full, color_intensity
+    # 2) Malt radar subset
     malt_traits = ["sweetness", "body_full", "color_intensity"]
-    mv = [ max(malt_vec.get(k,0.0),0.0) for k in malt_traits ]
+    mv = [max(malt_vec.get(k,0.0),0.0) for k in malt_traits]
     malt_max = max(mv+[1e-9])
-    malt_scaled = [ (x/malt_max if malt_max>0 else 0.0) for x in mv ]
+    malt_scaled = [(x/malt_max if malt_max>0 else 0.0) for x in mv]
 
-    # 3) Yeast radar: we have attenuation_num, flocculation_num, Temp_avg_F or similar
-    yeast_traits = ["Attenuation_num","Flocculation_num","Temp_avg_F","temp_avg_F","temp_avg_f","temp_avg_f_"]
-    # We'll compress them into canonical 3-labeled axes
+    # 3) Yeast radar subset
     ylabels = ["Attenuation_num","Flocculation_num","Temp_avg_F"]
     yv_raw = [
         max(
@@ -346,19 +337,16 @@ def build_radar_figures(hop_vec, malt_vec, yeast_vec):
         ),
     ]
     y_max = max(yv_raw+[1e-9])
-    y_scaled = [ (x/y_max if y_max>0 else 0.0) for x in yv_raw ]
+    y_scaled = [(x/y_max if y_max>0 else 0.0) for x in yv_raw]
 
     fig = plt.figure(figsize=(18,6))
 
-    # Hops
     ax1 = _radar_axes(len(hop_traits), 131, "Hops / Aroma")
     _plot_radar(ax1, hop_traits, hop_scaled, color="#1f77b4")
 
-    # Malt
     ax2 = _radar_axes(len(malt_traits), 132, "Malt / Body-Sweetness")
     _plot_radar(ax2, malt_traits, malt_scaled, color="#2ca02c")
 
-    # Yeast
     ax3 = _radar_axes(len(ylabels), 133, "Yeast / Fermentation")
     _plot_radar(ax3, ylabels, y_scaled, color="#d62728")
 
@@ -376,13 +364,10 @@ def call_azure_brewmaster_notes(
     yeast_vec: Dict[str,float],
 ) -> str:
     """
-    We attempt to call Azure OpenAI using the new OpenAI client.
-    If that fails (bad key, 404, etc.), we generate a local fallback.
-
-    We return CLEAN brewer notes text (no stack traces).
+    Attempts to call Azure OpenAI for guided brew notes.
+    If that fails (404 / bad key / etc.), returns a local fallback.
     """
 
-    # Build a short descriptor of the predicted flavor to feed the model:
     def short_desc(vec, keys):
         out = []
         for k in keys:
@@ -390,16 +375,14 @@ def call_azure_brewmaster_notes(
             out.append(f"{k}: {val:.2f}")
         return "; ".join(out)
 
-    hop_desc  = short_desc(hop_vec,  list(hop_vec.keys())[:8])
-    malt_desc = short_desc(malt_vec, list(malt_vec.keys())[:5])
-    yeast_desc= short_desc(yeast_vec,list(yeast_vec.keys())[:5])
+    hop_desc   = short_desc(hop_vec,  list(hop_vec.keys())[:8])
+    malt_desc  = short_desc(malt_vec, list(malt_vec.keys())[:5])
+    yeast_desc = short_desc(yeast_vec,list(yeast_vec.keys())[:5])
 
-    # We'll try Azure first
-    azure_key = os.environ.get("AZURE_OPENAI_API_KEY") or st.secrets.get("AZURE_OPENAI_API_KEY", "")
+    azure_key      = os.environ.get("AZURE_OPENAI_API_KEY") or st.secrets.get("AZURE_OPENAI_API_KEY", "")
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT") or st.secrets.get("AZURE_OPENAI_ENDPOINT", "")
     azure_deploy   = os.environ.get("AZURE_OPENAI_DEPLOYMENT") or st.secrets.get("AZURE_OPENAI_DEPLOYMENT", "")
 
-    # If we /can/ call Azure, do it
     if azure_key and azure_endpoint and azure_deploy:
         try:
             client = OpenAI(
@@ -409,12 +392,10 @@ def call_azure_brewmaster_notes(
 
             system_msg = (
                 "You are a professional brewmaster. "
-                "Given the brewer's stated goal and the predicted hop/malt/yeast sensory profile, "
-                "write concise, expert-level process adjustments: hop timing, grist tweaks, "
-                "fermentation strategy, mouthfeel tuning. "
-                "Use bullet points or numbered steps. Avoid generic filler. "
-                "Keep bitterness/balance/style constraints in mind. "
-                "No disclaimers about legal liability or safety."
+                "Given the brewer's goal and predicted hop/malt/yeast sensory profile, "
+                "provide concise, expert-level adjustments (hop timing, grist tweaks, "
+                "fermentation strategy, mouthfeel tuning). Bullet points or numbered steps. "
+                "Avoid filler and generic disclaimers."
             )
 
             user_msg = (
@@ -425,12 +406,11 @@ def call_azure_brewmaster_notes(
                 f"{malt_desc}\n\n"
                 "Predicted yeast/fermentation (approx):\n"
                 f"{yeast_desc}\n\n"
-                "Give actionable brewing guidance (late/dry hop ideas, grist tweaks, "
-                "fermentation schedule, body/mouthfeel tuning)."
+                "Give actionable brewing guidance."
             )
 
             completion = client.chat.completions.create(
-                model=azure_deploy,  # deployment name
+                model=azure_deploy,
                 messages=[
                     {"role":"system","content":system_msg},
                     {"role":"user","content":user_msg}
@@ -438,7 +418,7 @@ def call_azure_brewmaster_notes(
                 temperature=0.4,
                 max_tokens=500,
             )
-            # parse
+
             if (
                 completion and
                 hasattr(completion,"choices") and
@@ -451,25 +431,23 @@ def call_azure_brewmaster_notes(
                 if raw:
                     return raw
 
-        except Exception as e:
-            # We'll fail over below
-            pass
+        except Exception:
+            pass  # fail over to fallback
 
-    # Fallback
     fallback = (
         "Brewmaster Notes (prototype)\n\n"
         "1. Hop strategy:\n"
-        "- Lean toward tropical / stone-fruit hops in late-whirlpool or dry hop additions "
-        "(~10-15 min or sub-77°C whirlpool) to boost juicy aroma without boosting IBUs.\n"
+        "- Lean toward tropical / stone-fruit hops in late-whirlpool or dry hop (~10-15 min or sub-77°C) "
+        "to boost juicy aroma without boosting IBUs.\n"
         "- Keep early boil hops minimal to avoid sharp bitterness.\n"
         "- Split dry hop additions across multiple days for better oil extraction.\n\n"
         "2. Malt & body:\n"
-        "- Use pale / pilsner base plus a touch (5-10%) of oats or wheat for pillowy mouthfeel.\n"
-        "- Keep color fairly light to preserve bright fruit and avoid muddying mango / pineapple notes.\n\n"
+        "- Use pale / pilsner base plus ~5-10% oats or wheat for pillowy mouthfeel and stable haze.\n"
+        "- Keep color fairly light so bright mango / pineapple notes pop instead of going muddy.\n\n"
         "3. Fermentation:\n"
-        "- Pick a moderately ester-friendly yeast that enhances fruit without going solventy.\n"
-        "- Ferment in the lower end of the yeast's range to reduce harsh fusels.\n"
-        "- Aim for moderate attenuation (not bone dry) to keep mouthfeel plush.\n"
+        "- Choose a moderately ester-friendly yeast that enhances fruit without harsh fusels.\n"
+        "- Ferment toward the lower end of the yeast's range to avoid solventy heat.\n"
+        "- Aim for moderate attenuation so it stays plush, not bone-dry.\n"
     )
     return fallback
 
@@ -477,19 +455,16 @@ def call_azure_brewmaster_notes(
 # -------------------------------------------------
 # STREAMLIT LAYOUT
 # -------------------------------------------------
-
 st.markdown(
-    "<h1 style='font-size:2.5rem; line-height:1.2; display:flex; align-items:center;'>"
-    "🍺 Beer Recipe Digital Twin</h1>",
+    "<h1 style='font-size:2.5rem; line-height:1.2; display:flex; align-items:center;'>🍺 Beer Recipe Digital Twin</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
     "Your AI brew assistant:\n\n"
     "1. Build a hop bill, grain bill, and fermentation plan.\n\n"
     "2. Predict aroma, body, color, esters, mouthfeel — together.\n\n"
-    "3. Get brewmaster-style guidance based on your style goal.",
+    "3. Get brewmaster-style guidance based on your style goal."
 )
-
 st.markdown("---")
 
 # ---------------------
@@ -602,7 +577,6 @@ with c_y2:
 
 st.markdown("---")
 
-
 # ---------------------
 # PREDICTION BUTTON
 # ---------------------
@@ -618,7 +592,7 @@ malt_profile = {}
 yeast_profile = {}
 
 if predict_clicked:
-    # Build user-structured inputs
+    # Build structured inputs
     user_hops = []
     if hop1 and hop1_amt > 0:
         user_hops.append({"name":hop1,"amt":hop1_amt})
@@ -640,36 +614,53 @@ if predict_clicked:
     malt_profile = predict_malt_profile(user_malts)
     yeast_profile = predict_yeast_profile(user_yeast)
 
+    # Also stash the *current inputs* + predictions in session_state
+    st.session_state["main_hop"] = hop1
+    st.session_state["secondary_hop"] = hop2
+    st.session_state["hop_1_amount_g"] = hop1_amt
+    st.session_state["hop_2_amount_g"] = hop2_amt
+
+    st.session_state["malt_base"] = malt1
+    st.session_state["malt_special"] = malt2
+    st.session_state["malt_1_pct"] = malt1_pct
+    st.session_state["malt_2_pct"] = malt2_pct
+
+    st.session_state["yeast_strain"] = yeast_strain
+    st.session_state["ferm_temp_c"] = ferm_temp_c
+
+    st.session_state["hop_profile"] = hop_profile
+    st.session_state["malt_profile"] = malt_profile
+    st.session_state["yeast_profile"] = yeast_profile
+
     # -------------------------
-    # RADAR OVERVIEW (ONLY SPIDER CHARTS, NO NUMBERS)
+    # RADAR OVERVIEW
     # -------------------------
     st.markdown("## 🕸 Radar Overview")
     st.write(
         "Relative shape only. Axes are labeled by trait, numeric ticks/values are hidden."
     )
-
     radar_fig = build_radar_figures(hop_profile, malt_profile, yeast_profile)
     st.pyplot(radar_fig)
 
 st.markdown("---")
-import json
-import copy
-from datetime import datetime
 
-# --- Initialize saved batches container in session ---
+# -------------------------------------------------
+# SNAPSHOT & RECALL (SAVE / LOAD BATCHES)
+# -------------------------------------------------
 if "saved_batches" not in st.session_state:
     st.session_state["saved_batches"] = {}  # {batch_name: batch_dict}
 
 st.markdown("## 🗂 Recipe Snapshot & Recall")
-
 col_save, col_load = st.columns([2, 2])
 
 with col_save:
     st.markdown("#### Save current batch")
-    default_name = f"{st.session_state.get('main_hop', 'Batch')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    batch_name = st.text_input("Batch name", value=default_name)
+
+    # Build a default suggested name: "Mosaic - 2025-10-27 14:32"
+    suggested = f"{st.session_state.get('main_hop','Batch')} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    batch_name = st.text_input("Batch name", value=suggested)
+
     if st.button("💾 Save this batch"):
-        # build a snapshot of the current state
         batch_payload = {
             "inputs": {
                 "main_hop": st.session_state.get("main_hop", ""),
@@ -684,26 +675,17 @@ with col_save:
                 "ferm_temp_c": st.session_state.get("ferm_temp_c", 20.0),
             },
             "predictions": {
-                "hop_aroma_pred": hop_aroma_pred if 'hop_aroma_pred' in locals() else None,
-                "malt_profile_pred": malt_profile_pred if 'malt_profile_pred' in locals() else None,
-                "yeast_profile_pred": yeast_profile_pred if 'yeast_profile_pred' in locals() else None,
+                "hop_profile": st.session_state.get("hop_profile", {}),
+                "malt_profile": st.session_state.get("malt_profile", {}),
+                "yeast_profile": st.session_state.get("yeast_profile", {}),
             },
-            "ai_notes": ai_md if 'ai_md' in locals() else "",
+            "ai_notes": st.session_state.get("last_ai_notes",""),
         }
-if "ai_log" not in st.session_state:
-    st.session_state["ai_log"] = []
-
-st.session_state["ai_log"].append({
-    "timestamp": datetime.now().isoformat(timespec="seconds"),
-    "user_intent": user_intent_text,   # whatever variable you already capture from textarea
-    "notes": ai_md,
-})
 
         st.session_state["saved_batches"][batch_name] = copy.deepcopy(batch_payload)
 
         st.success(f"Saved batch: {batch_name} ✅")
 
-        # optional: show JSON so user can copy/store offline
         with st.expander("Show saved JSON for export"):
             st.code(json.dumps(batch_payload, indent=2))
 
@@ -712,26 +694,42 @@ with col_load:
     batch_options = list(st.session_state["saved_batches"].keys())
     if batch_options:
         selection = st.selectbox("Select a saved batch", options=batch_options)
+
         if st.button("📂 Load this batch"):
             loaded = st.session_state["saved_batches"][selection]
 
-            # restore input widgets in session_state
-            st.session_state["main_hop"] = loaded["inputs"]["main_hop"]
-            st.session_state["secondary_hop"] = loaded["inputs"]["secondary_hop"]
-            st.session_state["hop_1_amount_g"] = loaded["inputs"]["hop_1_amount_g"]
-            st.session_state["hop_2_amount_g"] = loaded["inputs"]["hop_2_amount_g"]
-            st.session_state["malt_base"] = loaded["inputs"]["malt_base"]
-            st.session_state["malt_special"] = loaded["inputs"]["malt_special"]
-            st.session_state["malt_1_pct"] = loaded["inputs"]["malt_1_pct"]
-            st.session_state["malt_2_pct"] = loaded["inputs"]["malt_2_pct"]
-            st.session_state["yeast_strain"] = loaded["inputs"]["yeast_strain"]
-            st.session_state["ferm_temp_c"] = loaded["inputs"]["ferm_temp_c"]
+            # restore inputs to session_state
+            st.session_state["main_hop"]        = loaded["inputs"]["main_hop"]
+            st.session_state["secondary_hop"]   = loaded["inputs"]["secondary_hop"]
+            st.session_state["hop_1_amount_g"]  = loaded["inputs"]["hop_1_amount_g"]
+            st.session_state["hop_2_amount_g"]  = loaded["inputs"]["hop_2_amount_g"]
+
+            st.session_state["malt_base"]       = loaded["inputs"]["malt_base"]
+            st.session_state["malt_special"]    = loaded["inputs"]["malt_special"]
+            st.session_state["malt_1_pct"]      = loaded["inputs"]["malt_1_pct"]
+            st.session_state["malt_2_pct"]      = loaded["inputs"]["malt_2_pct"]
+
+            st.session_state["yeast_strain"]    = loaded["inputs"]["yeast_strain"]
+            st.session_state["ferm_temp_c"]     = loaded["inputs"]["ferm_temp_c"]
+
+            # restore predictions
+            st.session_state["hop_profile"]     = loaded["predictions"]["hop_profile"]
+            st.session_state["malt_profile"]    = loaded["predictions"]["malt_profile"]
+            st.session_state["yeast_profile"]   = loaded["predictions"]["yeast_profile"]
+
+            # restore last AI notes
+            st.session_state["last_ai_notes"]   = loaded.get("ai_notes","")
 
             st.success(f"Loaded batch: {selection} ✅")
-            st.info("Scroll up — inputs have been restored. Click Predict again to recompute visuals.")
+            st.info("Scroll up — inputs have been restored in memory. You can tweak and click Predict again to recompute visuals.")
     else:
         st.caption("_No saved batches yet — save one on the left!_")
 
+st.markdown("---")
+
+# -------------------------------------------------
+# FLAVOR STEERING
+# -------------------------------------------------
 st.markdown("## 🎯 Flavor Steering")
 
 goal_choice = st.selectbox(
@@ -749,19 +747,23 @@ goal_choice = st.selectbox(
 if st.button("💡 Suggest tweaks"):
     tweak_list = flavor_tweak_suggestions(
         goal_choice,
-        hop_aroma_pred if 'hop_aroma_pred' in locals() else {},
-        malt_profile_pred if 'malt_profile_pred' in locals() else {},
-        yeast_profile_pred if 'yeast_profile_pred' in locals() else {},
+        st.session_state.get("hop_profile", {}),
+        st.session_state.get("malt_profile", {}),
+        st.session_state.get("yeast_profile", {}),
     )
 
     st.markdown("#### Suggested levers:")
     for t in tweak_list:
         st.markdown(f"- {t}")
 
+st.markdown("---")
 
 # ---------------------
 # AI BREWMASTER GUIDANCE
 # ---------------------
+if "ai_log" not in st.session_state:
+    st.session_state["ai_log"] = []
+
 st.header("🧪 AI Brewmaster Guidance")
 style_goal = st.text_area(
     "What's your intent for this beer? (e.g. 'Soft hazy IPA with saturated stone fruit and pineapple, low bitterness, pillowy mouthfeel')",
@@ -773,17 +775,30 @@ notes_clicked = st.button("🧪 Generate Brewmaster Notes")
 if notes_clicked:
     ai_text = call_azure_brewmaster_notes(
         goal_text=style_goal,
-        hop_vec=hop_profile if hop_profile else {},
-        malt_vec=malt_profile if malt_profile else {},
-        yeast_vec=yeast_profile if yeast_profile else {},
+        hop_vec=st.session_state.get("hop_profile", {}),
+        malt_vec=st.session_state.get("malt_profile", {}),
+        yeast_vec=st.session_state.get("yeast_profile", {}),
     )
 
+    # show
     st.subheader("Brewmaster Notes")
     st.write(ai_text)
     st.caption(
         "Prototype — not production brewing advice. "
         "Always match your yeast strain's process window."
     )
+
+    # persist last notes
+    st.session_state["last_ai_notes"] = ai_text
+
+    # log pair for (future) fine-tuning / analysis
+    st.session_state["ai_log"].append({
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "user_intent": style_goal,
+        "notes": ai_text,
+    })
+
+# Dev / export log
 with st.expander("🧪 Debug / Export AI guidance log (dev only)"):
     st.caption("These pairs can later be used to fine-tune / evaluate advisor quality.")
     st.code(json.dumps(st.session_state["ai_log"], indent=2))
