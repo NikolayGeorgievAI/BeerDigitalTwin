@@ -23,8 +23,8 @@ def _clean_name(name: str) -> str:
 
 def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
     """
-    prefix is 'hop_', 'malt_', 'yeast_' etc.
-    Returns the best matching feature column name from the model.
+    prefix is 'hop_', 'malt_', 'yeast_', etc.
+    Returns the best matching model feature column for a given user-entered name.
     """
     cleaned_user = _clean_name(user_name)
     best_match = None
@@ -33,12 +33,15 @@ def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
     for col in feature_cols:
         if not col.startswith(prefix):
             continue
+
         raw_label = col[len(prefix):]  # e.g. "Citra®" from "hop_Citra®"
         cleaned_label = _clean_name(raw_label)
 
+        # quick gate: do first 3 chars appear?
         if len(cleaned_user) >= 3 and cleaned_user[:3] not in cleaned_label:
             continue
 
+        # simple overlap score
         common = set(cleaned_user) & set(cleaned_label)
         score = len(common)
 
@@ -47,6 +50,7 @@ def _best_feature_match(user_name: str, feature_cols: list, prefix: str):
             best_match = col
 
     return best_match
+
 
 # -------------------------------------------------
 # LOAD MODELS
@@ -62,41 +66,20 @@ hop_feature_cols = hop_bundle["feature_cols"]
 hop_dims = [a for a in hop_bundle["aroma_dims"] if str(a).lower() not in ("nan", "", "none")]
 
 # --- Malt model bundle ---
+# malt_sensory_model.joblib has keys: "model", "feature_cols", "flavor_cols"
 MALT_MODEL_PATH = os.path.join(ROOT_DIR, "malt_sensory_model.joblib")
 malt_bundle = joblib.load(MALT_MODEL_PATH)
-
-# DEBUG: let's expose what keys this bundle actually has
-# We'll also use .get() so we don't crash the whole app.
-malt_bundle_keys = list(malt_bundle.keys()) if hasattr(malt_bundle, "keys") else type(malt_bundle)
-
-# Try common names
-malt_model = malt_bundle.get("model", None)
-malt_feature_cols = malt_bundle.get("feature_cols", [])
-raw_malt_dims = (
-    malt_bundle.get("aroma_dims")
-    or malt_bundle.get("malt_dims")
-    or malt_bundle.get("output_dims")
-    or malt_bundle.get("targets")
-    or []
-)
-malt_dims = [a for a in raw_malt_dims if str(a).lower() not in ("nan", "", "none")]
+malt_model = malt_bundle["model"]
+malt_feature_cols = malt_bundle["feature_cols"]         # inputs like 'malt_Maris Otter', etc.
+malt_dims = malt_bundle["flavor_cols"]                  # outputs like sweetness/body/color/etc.
 
 # --- Yeast model bundle ---
+# yeast_sensory_model.joblib has keys: "model", "feature_cols", "flavor_cols"
 YEAST_MODEL_PATH = os.path.join(ROOT_DIR, "yeast_sensory_model.joblib")
 yeast_bundle = joblib.load(YEAST_MODEL_PATH)
-
-yeast_bundle_keys = list(yeast_bundle.keys()) if hasattr(yeast_bundle, "keys") else type(yeast_bundle)
-
-yeast_model = yeast_bundle.get("model", None)
-yeast_feature_cols = yeast_bundle.get("feature_cols", [])
-raw_yeast_dims = (
-    yeast_bundle.get("aroma_dims")
-    or yeast_bundle.get("yeast_dims")
-    or yeast_bundle.get("output_dims")
-    or yeast_bundle.get("targets")
-    or []
-)
-yeast_dims = [a for a in raw_yeast_dims if str(a).lower() not in ("nan", "", "none")]
+yeast_model = yeast_bundle["model"]
+yeast_feature_cols = yeast_bundle["feature_cols"]       # inputs like 'yeast_LondonAleIII', etc.
+yeast_dims = yeast_bundle["flavor_cols"]                # outputs like ester profile, haze, attenuation, etc.
 
 
 # -------------------------------------------------
@@ -162,6 +145,7 @@ def advise_hops(user_hops, target_dim, trial_amt=20.0):
         "current_score": base_score,
     }
 
+
 # -------------------------------------------------
 # MALT FUNCTIONS
 # -------------------------------------------------
@@ -169,7 +153,7 @@ def advise_hops(user_hops, target_dim, trial_amt=20.0):
 def build_malt_features(user_malts):
     """
     user_malts: [ {"name": "Maris Otter", "pct": 70}, {"name": "Caramunich III", "pct": 8}, ... ]
-    We assume pct is percent of grist (0-100).
+    pct assumed to be percent of grist (0-100).
     Returns 1-row DataFrame aligned to malt_feature_cols.
     """
     totals = {c: 0.0 for c in malt_feature_cols}
@@ -195,7 +179,7 @@ def predict_malt_profile(user_malts):
 def advise_malt(user_malts, target_dim, trial_pct=2.0):
     """
     Try bumping each malt by trial_pct% of grist.
-    Return the malt that best improves target_dim (body, caramel, etc.)
+    Return the malt that best improves target_dim (body, caramel, sweetness, etc.)
     """
     base_vec = predict_malt_profile(user_malts)
     base_score = base_vec.get(target_dim, 0.0)
@@ -223,10 +207,11 @@ def advise_malt(user_malts, target_dim, trial_pct=2.0):
         "target_dim": target_dim,
         "addition_pct": trial_pct,
         "recommended_malt": best_choice,
-        "expected_improvement": delta if best_choice else 0.0,
+        "expected_improvement": best_delta,
         "new_profile": best_new_profile,
         "current_score": base_score,
     }
+
 
 # -------------------------------------------------
 # YEAST / FERMENTATION FUNCTIONS
@@ -240,10 +225,9 @@ def build_yeast_features(user_yeast):
         "ferm_temp_f": 68
       }
 
-    We'll do two things:
-    - one-hot strain to yeast_feature_cols (prefix 'yeast_')
-    - optionally bin fermentation temp into a feature if your model expects temp.
-    For now we just match the strain by fuzzy name and set that column = 1.
+    We'll fuzzy match the strain to 'yeast_*' columns in yeast_feature_cols
+    and set that column = 1.0. For now we ignore ferm_temp_f unless
+    your yeast_feature_cols actually encode temp buckets.
     """
     totals = {c: 0.0 for c in yeast_feature_cols}
 
@@ -251,10 +235,6 @@ def build_yeast_features(user_yeast):
     match = _best_feature_match(strain, yeast_feature_cols, prefix="yeast_")
     if match:
         totals[match] = 1.0
-
-    # If your yeast model expects numeric features like temp, you'd add them here.
-    # For example, if yeast_feature_cols includes "fermtemp_68f", we could fuzzy-match temp buckets.
-    # We'll keep it simple for now.
 
     return pd.DataFrame([totals], columns=yeast_feature_cols)
 
@@ -269,8 +249,7 @@ def predict_yeast_profile(user_yeast):
 
 def advise_yeast(user_yeast, target_dim):
     """
-    Try swapping strain for every strain we know (i.e. every yeast_... feature),
-    choose the strain that best improves target_dim.
+    Try swapping strain to each known yeast_* column. Pick best improvement.
     """
     base_vec = predict_yeast_profile(user_yeast)
     base_score = base_vec.get(target_dim, 0.0)
@@ -279,7 +258,6 @@ def advise_yeast(user_yeast, target_dim):
     best_delta = -999.0
     best_new_profile = None
 
-    # brute force each yeast strain:
     for col in yeast_feature_cols:
         if not col.startswith("yeast_"):
             continue
@@ -287,7 +265,6 @@ def advise_yeast(user_yeast, target_dim):
 
         trial_ferm = {
             "strain": candidate_label,
-            # could copy ferm temp from user_yeast if you like
             "ferm_temp_f": user_yeast.get("ferm_temp_f", 68),
         }
         trial_vec = predict_yeast_profile(trial_ferm)
@@ -307,20 +284,33 @@ def advise_yeast(user_yeast, target_dim):
         "current_score": base_score,
     }
 
+
 # -------------------------------------------------
-# VIS
+# VISUALIZATION
 # -------------------------------------------------
 
-def plot_radar(aroma_profile, title="Profile"):
-    dims = list(aroma_profile.keys())
-    vals = [aroma_profile[d] for d in dims]
+def plot_radar(profile_dict, title="Profile"):
+    """
+    Generic radar plot for any profile dict {dimension: value}.
+    Assumes values ~0..1 for most dims.
+    """
+    if not profile_dict:
+        fig = plt.figure(figsize=(4,4))
+        ax = plt.subplot(111)
+        ax.text(0.5,0.5,"no data", ha="center", va="center")
+        ax.set_axis_off()
+        return fig
 
+    dims = list(profile_dict.keys())
+    vals = [profile_dict[d] for d in dims]
+
+    # close polygon
     dims.append(dims[0])
     vals.append(vals[0])
 
     angles = np.linspace(0, 2 * np.pi, len(dims), endpoint=False)
 
-    fig = plt.figure(figsize=(5, 5))
+    fig = plt.figure(figsize=(5,5))
     ax = plt.subplot(111, polar=True)
     ax.plot(angles, vals, marker="o")
     ax.fill(angles, vals, alpha=0.25)
@@ -331,14 +321,15 @@ def plot_radar(aroma_profile, title="Profile"):
     plt.tight_layout()
     return fig
 
+
 # -------------------------------------------------
-# GENERATIVE ADVISOR (Azure placeholder)
+# GENERATIVE BREWMASTER NOTES (Azure placeholder)
 # -------------------------------------------------
 
 def generate_brewmaster_notes(hop_prof, malt_prof, yeast_prof, brewer_goal):
     """
-    This is the slot where Azure OpenAI will go.
-    For now we just stitch together a narrative.
+    Placeholder that will become an Azure OpenAI call.
+    We stitch together all model outputs and the user's intent.
     """
     lines = []
     lines.append("Brewmaster Notes (Prototype)")
@@ -359,26 +350,19 @@ def generate_brewmaster_notes(hop_prof, malt_prof, yeast_prof, brewer_goal):
         lines.append(f"  {k}: {v:.2f}")
     lines.append("")
     lines.append("High-level guidance:")
-    lines.append("- Increase late-addition hops that boost your target ester/aroma.")
-    lines.append("- Tune malt % to adjust mid-palate sweetness and perceived body without overshooting color.")
-    lines.append("- Pick a yeast strain / temp that reinforces the fruit profile you actually want.")
+    lines.append("- Adjust late-addition hops to push target aromatics.")
+    lines.append("- Tweak grist % for sweetness / body / color without overshooting style.")
+    lines.append("- Pick a yeast strain & temp schedule that reinforces the ester profile you want.")
     lines.append("")
-    lines.append("This section will be AI-generated by Azure (process tweaks, timing, etc.).")
-
+    lines.append("This section will soon be Azure-generated and include process/timing recommendations.")
     return "\n".join(lines)
+
 
 # -------------------------------------------------
 # STREAMLIT APP
 # -------------------------------------------------
 
 st.set_page_config(page_title="Beer Recipe Digital Twin", page_icon="🍺", layout="centered")
-st.sidebar.header("⚙ Debug model bundles")
-st.sidebar.write("malt_bundle keys:", malt_bundle_keys)
-st.sidebar.write("yeast_bundle keys:", yeast_bundle_keys)
-st.sidebar.write("malt_feature_cols len:", len(malt_feature_cols))
-st.sidebar.write("yeast_feature_cols len:", len(yeast_feature_cols))
-st.sidebar.write("malt_dims:", raw_malt_dims)
-st.sidebar.write("yeast_dims:", raw_yeast_dims)
 
 st.title("🍺 Beer Recipe Digital Twin")
 st.markdown("""
@@ -392,6 +376,7 @@ st.markdown("---")
 # ---------------------------
 # HOPS SECTION
 # ---------------------------
+
 st.header("🌿 Hops: Aroma + Hop Addition Advisor")
 
 c1, c2, c3 = st.columns([1,1,1])
@@ -410,12 +395,10 @@ if hop1 and hop1_amt > 0:
 if hop2 and hop2_amt > 0:
     user_hops.append({"name": hop2, "amt": hop2_amt})
 
-st.markdown("")
-hop_predict_clicked = st.button("🔍 Predict Hop Aroma")
-
 hop_profile = {}
 hop_advice = None
 
+hop_predict_clicked = st.button("🔍 Predict Hop Aroma")
 if hop_predict_clicked and user_hops:
     hop_profile = predict_hop_profile(user_hops)
     st.subheader("Predicted Hop Aroma Profile")
@@ -429,7 +412,6 @@ if hop_predict_clicked and user_hops:
     trial_amt = st.slider("Simulate late-addition / whirlpool hop (g):", 5, 60, 20, 5)
 
     hop_advise_clicked = st.button("🧠 Advise Hop Addition")
-
     if hop_advise_clicked:
         hop_advice = advise_hops(user_hops, target_dim=hop_target, trial_amt=trial_amt)
         st.success(
@@ -437,6 +419,7 @@ if hop_predict_clicked and user_hops:
             f"add {hop_advice['addition_grams']} g of **{hop_advice['recommended_hop']}**.\n\n"
             f"Expected improvement: +{hop_advice['expected_improvement']:.3f}"
         )
+
         st.subheader("New projected hop aroma after that change")
         st.json(hop_advice["new_profile"])
 
@@ -448,6 +431,7 @@ st.markdown("---")
 # ---------------------------
 # MALT SECTION
 # ---------------------------
+
 with st.expander("🌾 Malt / Grain Bill: Body, Sweetness, Color Advisor", expanded=False):
     m1, m2 = st.columns([1,1])
     with m1:
@@ -463,11 +447,10 @@ with st.expander("🌾 Malt / Grain Bill: Body, Sweetness, Color Advisor", expan
     if malt2 and malt2_pct > 0:
         user_malts.append({"name": malt2, "pct": malt2_pct})
 
-    malt_predict_clicked = st.button("🔍 Predict Malt Profile")
-
     malt_profile = {}
     malt_advice = None
 
+    malt_predict_clicked = st.button("🔍 Predict Malt Profile")
     if malt_predict_clicked and user_malts:
         malt_profile = predict_malt_profile(user_malts)
         st.subheader("Predicted Malt Profile / Body / Color")
@@ -484,14 +467,14 @@ with st.expander("🌾 Malt / Grain Bill: Body, Sweetness, Color Advisor", expan
         trial_pct = st.slider("Simulate adding (+% of grist):", 1, 10, 2, 1)
 
         malt_advise_clicked = st.button("🧠 Advise Malt Change")
-
-        if malt_advise_clicked:
+        if malt_advice_clicked := malt_advise_clicked:  # just to keep scope name
             malt_advice = advise_malt(user_malts, target_dim=malt_target, trial_pct=trial_pct)
             st.success(
                 f"To boost **{malt_advice['target_dim']}**, "
                 f"add about {malt_advice['addition_pct']}% of **{malt_advice['recommended_malt']}** "
                 f"to the grist. Expected change: +{malt_advice['expected_improvement']:.3f}"
             )
+
             st.subheader("New projected malt profile after that change")
             st.json(malt_advice["new_profile"])
 
@@ -516,11 +499,10 @@ with st.expander("🧫 Yeast & Fermentation: Ester / Mouthfeel Advisor", expande
         "ferm_temp_f": ferm_temp,
     }
 
-    yeast_predict_clicked = st.button("🔍 Predict Fermentation Profile")
-
     yeast_profile = {}
     yeast_advice = None
 
+    yeast_predict_clicked = st.button("🔍 Predict Fermentation Profile")
     if yeast_predict_clicked and yeast_strain:
         yeast_profile = predict_yeast_profile(user_yeast)
         st.subheader("Predicted Fermentation / Yeast Profile")
@@ -536,7 +518,6 @@ with st.expander("🧫 Yeast & Fermentation: Ester / Mouthfeel Advisor", expande
         )
 
         yeast_advise_clicked = st.button("🧠 Advise Fermentation Change")
-
         if yeast_advise_clicked:
             yeast_advice = advise_yeast(user_yeast, target_dim=yeast_target)
             st.success(
@@ -554,7 +535,7 @@ with st.expander("🧫 Yeast & Fermentation: Ester / Mouthfeel Advisor", expande
 st.markdown("---")
 
 # ---------------------------
-# AZURE "HEAD BREWER" ADVISOR (stub for now)
+# BREWMASTER AI NOTES (Azure stub)
 # ---------------------------
 
 st.header("👨‍🔬 Brewmaster Notes (AI Co-Brewer)")
@@ -566,10 +547,10 @@ brewer_goal = st.text_area(
 generate_notes_clicked = st.button("🗣 Generate Brewmaster Notes")
 
 if generate_notes_clicked:
-    # if user hasn't run sections above, we'll just feed empty dicts
+    # use last-known profiles in scope if they exist, else empty
     hop_prof_for_notes = hop_profile if hop_profile else {}
-    malt_prof_for_notes = malt_profile if 'malt_profile' in locals() and malt_profile else {}
-    yeast_prof_for_notes = yeast_profile if 'yeast_profile' in locals() and yeast_profile else {}
+    malt_prof_for_notes = locals().get("malt_profile", {}) or {}
+    yeast_prof_for_notes = locals().get("yeast_profile", {}) or {}
 
     notes = generate_brewmaster_notes(
         hop_prof_for_notes,
@@ -581,4 +562,4 @@ if generate_notes_clicked:
     st.subheader("Prototype Brewmaster Guidance")
     st.code(notes, language="text")
 
-    st.info("This block will soon come from Azure OpenAI, using your hop/malt/yeast predictions + your target style.")
+    st.info("This block will soon come from Azure OpenAI, using hop/malt/yeast predictions + your target style.")
