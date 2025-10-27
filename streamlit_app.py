@@ -724,6 +724,33 @@ with col_load:
     else:
         st.caption("_No saved batches yet — save one on the left!_")
 
+st.markdown("## 🎯 Flavor Steering")
+
+goal_choice = st.selectbox(
+    "What direction do you want to push this beer?",
+    [
+        "More tropical fruit / mango / pineapple",
+        "More body / pillowy mouthfeel",
+        "Drier / crisper / brighter bitterness",
+        "More color / malt depth",
+        "Something else..."
+    ],
+    index=0,
+)
+
+if st.button("💡 Suggest tweaks"):
+    tweak_list = flavor_tweak_suggestions(
+        goal_choice,
+        hop_aroma_pred if 'hop_aroma_pred' in locals() else {},
+        malt_profile_pred if 'malt_profile_pred' in locals() else {},
+        yeast_profile_pred if 'yeast_profile_pred' in locals() else {},
+    )
+
+    st.markdown("#### Suggested levers:")
+    for t in tweak_list:
+        st.markdown(f"- {t}")
+
+
 # ---------------------
 # AI BREWMASTER GUIDANCE
 # ---------------------
